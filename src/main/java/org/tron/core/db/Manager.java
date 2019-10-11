@@ -2058,15 +2058,16 @@ public class Manager {
     }
 
     for (TransactionCapsule e : newBlock.getTransactions()) {
-      postTransactionTrigger(e, newBlock);
+      postTransactionTrigger(e, newBlock, false);
     }
   }
 
   private void postTransactionTrigger(final TransactionCapsule trxCap,
-      final BlockCapsule blockCap) {
+      final BlockCapsule blockCap, boolean removed) {
     if (eventPluginLoaded && EventPluginLoader.getInstance().isTransactionLogTriggerEnable()) {
       TransactionLogTriggerCapsule trx = new TransactionLogTriggerCapsule(trxCap, blockCap);
       trx.setLatestSolidifiedBlockNumber(latestSolidifiedBlockNumber);
+      trx.getTransactionLogTrigger().setRemoved(removed);
       boolean result = triggerCapsuleQueue.offer(trx);
       if (!result) {
         logger.info("too many trigger, lost transaction trigger: {}", trxCap.getTransactionId());
@@ -2084,6 +2085,7 @@ public class Manager {
             getDynamicPropertiesStore().getLatestBlockHeaderHash());
         for (TransactionCapsule trx : oldHeadBlock.getTransactions()) {
           postContractTrigger(trx.getTrxTrace(), true);
+          postTransactionTrigger(trx, oldHeadBlock, true);
         }
       } catch (BadItemException | ItemNotFoundException e) {
         logger.error("block header hash not exists or bad: {}",

@@ -1,9 +1,9 @@
 package org.tron.common.logsfilter.trigger;
 
-import java.util.ArrayList;
-import java.util.List;
 import lombok.Getter;
 import lombok.Setter;
+
+import java.util.List;
 
 public class TransactionLogTrigger extends Trigger {
 
@@ -98,6 +98,10 @@ public class TransactionLogTrigger extends Trigger {
   @Getter
   @Setter
   private List<InternalTransactionPojo> internalTrananctionList;
+
+  @Getter
+  @Setter
+  private boolean removed;
 
   public TransactionLogTrigger() {
     setTriggerName(Trigger.TRANSACTION_TRIGGER_NAME);
