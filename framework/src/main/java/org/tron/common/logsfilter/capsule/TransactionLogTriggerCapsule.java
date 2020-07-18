@@ -5,14 +5,15 @@ import static org.tron.protos.Protocol.Transaction.Contract.ContractType.Transfe
 
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+
+import java.util.*;
+
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.spongycastle.util.encoders.Hex;
 import org.tron.common.logsfilter.EventPluginLoader;
+import org.tron.common.logsfilter.trigger.ContractTrigger;
 import org.tron.common.logsfilter.trigger.InternalTransactionPojo;
 import org.tron.common.logsfilter.trigger.TransactionLogTrigger;
 import org.tron.common.runtime.InternalTransaction;
@@ -132,7 +133,19 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       ProgramResult programResult = trxTrace.getRuntime().getResult();
       ByteString contractResult = ByteString.copyFrom(programResult.getHReturn());
       ByteString contractAddress = ByteString.copyFrom(programResult.getContractAddress());
-
+      List<Map<String, Object>> triggerList = new ArrayList<Map<String, Object>>();
+      for (ContractTrigger trigger : trxTrace.getRuntimeResult().getTriggerList()) {
+        Map<String, Object> triggerCopy = new HashMap<String, Object>();
+        triggerCopy.put("transactionId", trigger.getTransactionId());
+        triggerCopy.put("callerAddress", trigger.getCallerAddress());
+        triggerCopy.put("originAddress", trigger.getOriginAddress());
+        triggerCopy.put("contractAddress", trigger.getContractAddress());
+        triggerCopy.put("creatorAddress", trigger.getCreatorAddress());
+        triggerCopy.put("rawData", trigger.getRawData());
+        triggerList.add(triggerCopy);
+      }
+      transactionLogTrigger.setTriggerList(triggerList);
+      transactionLogTrigger.setLogInfoList(programResult.getLogInfoList());
       if (Objects.nonNull(contractResult) && contractResult.size() > 0) {
         transactionLogTrigger.setContractResult(Hex.toHexString(contractResult.toByteArray()));
       }
