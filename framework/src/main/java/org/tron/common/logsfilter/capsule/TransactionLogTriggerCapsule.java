@@ -117,6 +117,26 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
               }
               transactionLogTrigger.setAssetAmount(contractTransfer.getAmount());
             }
+          } else if (contract.getType() == TriggerSmartContract) {
+            TriggerSmartContract triggerSmartContract = contractParameter
+                    .unpack(TriggerSmartContract.class);
+
+            if (Objects.nonNull(triggerSmartContract)) {
+              transactionLogTrigger.setAssetName("");
+              transactionLogTrigger.setTokenId(triggerSmartContract.getTokenId());
+
+              if (Objects.nonNull(triggerSmartContract.getOwnerAddress())) {
+                transactionLogTrigger.setFromAddress(
+                        WalletUtil.encode58Check(triggerSmartContract.getOwnerAddress().toByteArray()));
+              }
+
+              if (Objects.nonNull(triggerSmartContract.getContractAddress())) {
+                transactionLogTrigger.setToAddress(
+                        WalletUtil.encode58Check(triggerSmartContract.getContractAddress().toByteArray()));
+              }
+              transactionLogTrigger.setAssetAmount(triggerSmartContract.getCallValue());
+              transactionLogTrigger.setAssetTokenAmount(triggerSmartContract.getCallTokenValue());
+            }
           }
         } catch (Exception e) {
           logger.error("failed to load transferAssetContract, error'{}'", e);

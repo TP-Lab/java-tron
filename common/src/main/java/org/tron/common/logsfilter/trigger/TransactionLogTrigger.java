@@ -67,7 +67,13 @@ public class TransactionLogTrigger extends Trigger {
   private String assetName;
   @Getter
   @Setter
+  private long tokenId;
+  @Getter
+  @Setter
   private long assetAmount;
+  @Getter
+  @Setter
+  private long assetTokenAmount;
   @Getter
   @Setter
   private List<Map<String, Object>> triggerList;
