@@ -1,13 +1,7 @@
 package org.tron.common.logsfilter.capsule;
 
-import static org.tron.protos.Protocol.Transaction.Contract.ContractType.TransferAssetContract;
-import static org.tron.protos.Protocol.Transaction.Contract.ContractType.TransferContract;
-
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
-
-import java.util.*;
-
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -25,6 +19,11 @@ import org.tron.core.db.TransactionTrace;
 import org.tron.protos.Protocol;
 import org.tron.protos.contract.AssetIssueContractOuterClass.TransferAssetContract;
 import org.tron.protos.contract.BalanceContract.TransferContract;
+import org.tron.protos.contract.SmartContractOuterClass;
+
+import java.util.*;
+
+import static org.tron.protos.Protocol.Transaction.Contract.ContractType.*;
 
 @Slf4j
 public class TransactionLogTriggerCapsule extends TriggerCapsule {
@@ -111,8 +110,8 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
               transactionLogTrigger.setAssetAmount(contractTransfer.getAmount());
             }
           } else if (contract.getType() == TriggerSmartContract) {
-            TriggerSmartContract triggerSmartContract = contractParameter
-                    .unpack(TriggerSmartContract.class);
+            SmartContractOuterClass.TriggerSmartContract triggerSmartContract = contractParameter
+                    .unpack(SmartContractOuterClass.TriggerSmartContract.class);
 
             if (Objects.nonNull(triggerSmartContract)) {
               transactionLogTrigger.setAssetName("");
@@ -120,12 +119,12 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
 
               if (Objects.nonNull(triggerSmartContract.getOwnerAddress())) {
                 transactionLogTrigger.setFromAddress(
-                        WalletUtil.encode58Check(triggerSmartContract.getOwnerAddress().toByteArray()));
+                        StringUtil.encode58Check(triggerSmartContract.getOwnerAddress().toByteArray()));
               }
 
               if (Objects.nonNull(triggerSmartContract.getContractAddress())) {
                 transactionLogTrigger.setToAddress(
-                        WalletUtil.encode58Check(triggerSmartContract.getContractAddress().toByteArray()));
+                        StringUtil.encode58Check(triggerSmartContract.getContractAddress().toByteArray()));
               }
               transactionLogTrigger.setAssetAmount(triggerSmartContract.getCallValue());
               transactionLogTrigger.setAssetTokenAmount(triggerSmartContract.getCallTokenValue());
