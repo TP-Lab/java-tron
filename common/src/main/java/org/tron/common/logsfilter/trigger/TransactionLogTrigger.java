@@ -1,8 +1,11 @@
 package org.tron.common.logsfilter.trigger;
 
 import java.util.List;
+import java.util.Map;
+
 import lombok.Getter;
 import lombok.Setter;
+import org.tron.common.runtime.vm.LogInfo;
 
 public class TransactionLogTrigger extends Trigger {
 
@@ -64,7 +67,19 @@ public class TransactionLogTrigger extends Trigger {
   private String assetName;
   @Getter
   @Setter
+  private long tokenId;
+  @Getter
+  @Setter
   private long assetAmount;
+  @Getter
+  @Setter
+  private long assetTokenAmount;
+  @Getter
+  @Setter
+  private List<Map<String, Object>> triggerList;
+  @Getter
+  @Setter
+  private List<LogInfo> logInfoList;
   @Getter
   @Setter
   private long latestSolidifiedBlockNumber;
