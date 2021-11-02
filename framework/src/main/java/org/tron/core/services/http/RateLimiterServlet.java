@@ -72,7 +72,7 @@ public abstract class RateLimiterServlet extends HttpServlet {
       // if the specific rate limiter strategy of servlet is not defined or fail to add,
       // then add a default Strategy.
       try {
-        IRateLimiter rateLimiter = new DefaultBaseQqsAdapter("qps=1000");
+        IRateLimiter rateLimiter = new DefaultBaseQqsAdapter("qps=10000");
         container.add(KEY_PREFIX_HTTP, getClass().getSimpleName(), rateLimiter);
       } catch (Exception e) {
         logger.warn(
