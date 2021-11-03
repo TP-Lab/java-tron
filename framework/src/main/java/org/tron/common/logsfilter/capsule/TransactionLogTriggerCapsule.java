@@ -137,28 +137,18 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
                             }
                             break;
                         case TriggerSmartContract:
-                            TriggerSmartContract triggerSmartContract = contractParameter
-                                    .unpack(TriggerSmartContract.class);
-
-                            if (Objects.nonNull(triggerSmartContract.getOwnerAddress())) {
-                                transactionLogTrigger.setFromAddress(
-                                        StringUtil.encode58Check(triggerSmartContract.getOwnerAddress().toByteArray()));
-                            }
-
-                            if (Objects.nonNull(triggerSmartContract.getContractAddress())) {
-                                transactionLogTrigger.setToAddress(StringUtil
-                                        .encode58Check(triggerSmartContract.getContractAddress().toByteArray()));
-                            }
-                            break;
-                        case CreateSmartContract:
-
-//              CreateSmartContract createSmartContract = contractParameter
-//                  .unpack(CreateSmartContract.class);
+//                            TriggerSmartContract triggerSmartContract = contractParameter
+//                                    .unpack(TriggerSmartContract.class);
 //
-//              if (Objects.nonNull(createSmartContract.getOwnerAddress())) {
-//                transactionLogTrigger.setFromAddress(
-//                    StringUtil.encode58Check(createSmartContract.getOwnerAddress().toByteArray()));
-//              }
+//                            if (Objects.nonNull(triggerSmartContract.getOwnerAddress())) {
+//                                transactionLogTrigger.setFromAddress(
+//                                        StringUtil.encode58Check(triggerSmartContract.getOwnerAddress().toByteArray()));
+//                            }
+//
+//                            if (Objects.nonNull(triggerSmartContract.getContractAddress())) {
+//                                transactionLogTrigger.setToAddress(StringUtil
+//                                        .encode58Check(triggerSmartContract.getContractAddress().toByteArray()));
+//                            }
                             SmartContractOuterClass.TriggerSmartContract triggerSmartContract = contractParameter
                                     .unpack(SmartContractOuterClass.TriggerSmartContract.class);
 
@@ -177,6 +167,15 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
                                 }
                                 transactionLogTrigger.setAssetAmount(triggerSmartContract.getCallValue());
                                 transactionLogTrigger.setAssetTokenAmount(triggerSmartContract.getCallTokenValue());
+                            }
+                            break;
+                        case CreateSmartContract:
+                            CreateSmartContract createSmartContract = contractParameter
+                                    .unpack(CreateSmartContract.class);
+
+                            if (Objects.nonNull(createSmartContract.getOwnerAddress())) {
+                                transactionLogTrigger.setFromAddress(
+                                        StringUtil.encode58Check(createSmartContract.getOwnerAddress().toByteArray()));
                             }
                             break;
                         default:
