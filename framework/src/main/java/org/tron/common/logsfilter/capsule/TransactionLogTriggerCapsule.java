@@ -181,7 +181,6 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
                             break;
                         default:
                             break;
-                        transactionLogTrigger.setAssetAmount(contractTransfer.getAmount());
                     }
                 } catch (Exception e) {
                     logger.error("failed to load transferAssetContract, error '{}'", e.getMessage());
