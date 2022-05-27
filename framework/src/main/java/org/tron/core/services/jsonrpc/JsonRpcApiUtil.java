@@ -1,11 +1,15 @@
 package org.tron.core.services.jsonrpc;
 
+import static org.tron.core.services.jsonrpc.TronJsonRpcImpl.EARLIEST_STR;
+import static org.tron.core.services.jsonrpc.TronJsonRpcImpl.LATEST_STR;
+import static org.tron.core.services.jsonrpc.TronJsonRpcImpl.PENDING_STR;
+
 import com.google.common.base.Throwables;
 import com.google.common.primitives.Longs;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
+import java.security.SecureRandom;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -13,6 +17,7 @@ import org.bouncycastle.util.encoders.Hex;
 import org.tron.api.GrpcAPI.AssetIssueList;
 import org.tron.common.crypto.Hash;
 import org.tron.common.parameter.CommonParameter;
+import org.tron.common.runtime.vm.DataWord;
 import org.tron.common.utils.ByteArray;
 import org.tron.common.utils.ByteUtil;
 import org.tron.common.utils.DecodeUtil;
@@ -47,6 +52,7 @@ import org.tron.protos.contract.WitnessContract.VoteWitnessContract.Vote;
 
 @Slf4j(topic = "API")
 public class JsonRpcApiUtil {
+
   public static byte[] convertToTronAddress(byte[] address) {
     byte[] newAddress = new byte[21];
     byte[] temp = new byte[] {Wallet.getAddressPreFixByte()};
@@ -141,14 +147,14 @@ public class JsonRpcApiUtil {
         case FreezeBalanceContract:
           ByteString receiverAddress = contractParameter.unpack(FreezeBalanceContract.class)
               .getReceiverAddress();
-          if (receiverAddress != null && !receiverAddress.isEmpty()) {
+          if (!receiverAddress.isEmpty()) {
             list.add(receiverAddress);
           }
           break;
         case UnfreezeBalanceContract:
           receiverAddress = contractParameter.unpack(UnfreezeBalanceContract.class)
               .getReceiverAddress();
-          if (receiverAddress != null && !receiverAddress.isEmpty()) {
+          if (!receiverAddress.isEmpty()) {
             list.add(receiverAddress);
           }
           break;
@@ -177,8 +183,6 @@ public class JsonRpcApiUtil {
       return list;
     } catch (Exception ex) {
       ex.printStackTrace();
-    } catch (Throwable t) {
-      t.printStackTrace();
     }
     return list;
   }
@@ -205,8 +209,6 @@ public class JsonRpcApiUtil {
     } catch (Exception e) {
       logger.error("Exception happens when get amount. Exception = [{}]",
           Throwables.getStackTraceAsString(e));
-    } catch (Throwable t) {
-      t.printStackTrace();
     }
 
     return amount;
@@ -240,14 +242,6 @@ public class JsonRpcApiUtil {
           amount = 1024_000_000L;
           break;
         case ParticipateAssetIssueContract:
-          // long token = DataImporter.getTokenID(blockNum,
-          //     contractParameter.unpack(ParticipateAssetIssueContract.class).getAssetName());
-          // long trxNum = contractParameter.unpack(ParticipateAssetIssueContract.class)
-          // .getAmount();
-          // Token10Entity entity = DataImporter.getTokenEntity(token);
-          // long exchangeAmount = Math.multiplyExact(trxNum, entity.getNum());
-          // exchangeAmount = Math.floorDiv(exchangeAmount, entity.getTrxNum());
-          // amount = exchangeAmount;
           break;
         case FreezeBalanceContract:
           amount = contractParameter.unpack(FreezeBalanceContract.class).getFrozenBalance();
@@ -289,8 +283,6 @@ public class JsonRpcApiUtil {
     } catch (Exception e) {
       logger.error("Exception happens when get amount. Exception = [{}]",
           Throwables.getStackTraceAsString(e));
-    } catch (Throwable t) {
-      t.printStackTrace();
     }
     return amount;
   }
@@ -347,9 +339,7 @@ public class JsonRpcApiUtil {
           return amount;
         } else {
           AssetIssueContract assetIssue = assetIssueList.getAssetIssue(0);
-          Iterator<FrozenSupply> iterator = assetIssue.getFrozenSupplyList().iterator();
-          while (iterator.hasNext()) {
-            FrozenSupply frozenSupply = iterator.next();
+          for (FrozenSupply frozenSupply : assetIssue.getFrozenSupplyList()) {
             amount += frozenSupply.getFrozenAmount();
           }
         }
@@ -361,22 +351,52 @@ public class JsonRpcApiUtil {
     return amount;
   }
 
-  public static byte[] addressHashToByteArray(String hash) throws JsonRpcInvalidParamsException {
-    byte[] bHash;
+  /**
+   * convert 40 or 42 hex string of address to byte array, compatible with "41"(T) ahead,
+   * padding 0 ahead if length is odd.
+   */
+  public static byte[] addressCompatibleToByteArray(String hexAddress)
+      throws JsonRpcInvalidParamsException {
+    byte[] addressByte;
     try {
-      bHash = ByteArray.fromHexString(hash);
-      if (bHash.length != DecodeUtil.ADDRESS_SIZE / 2
-          && bHash.length != DecodeUtil.ADDRESS_SIZE / 2 - 1) {
+      addressByte = ByteArray.fromHexString(hexAddress);
+      if (addressByte.length != DecodeUtil.ADDRESS_SIZE / 2
+          && addressByte.length != DecodeUtil.ADDRESS_SIZE / 2 - 1) {
         throw new JsonRpcInvalidParamsException("invalid address hash value");
       }
 
-      if (bHash.length == DecodeUtil.ADDRESS_SIZE / 2 - 1) {
-        bHash = ByteUtil.merge(new byte[] {DecodeUtil.addressPreFixByte}, bHash);
+      if (addressByte.length == DecodeUtil.ADDRESS_SIZE / 2 - 1) {
+        addressByte = ByteUtil.merge(new byte[] {DecodeUtil.addressPreFixByte}, addressByte);
+      } else if (addressByte[0] != ByteArray.fromHexString(DecodeUtil.addressPreFixString)[0]) {
+        // addressByte.length == DecodeUtil.ADDRESS_SIZE / 2
+        throw new JsonRpcInvalidParamsException("invalid address hash value");
       }
     } catch (Exception e) {
       throw new JsonRpcInvalidParamsException(e.getMessage());
     }
-    return bHash;
+    return addressByte;
+  }
+
+  /**
+   * convert 40 hex string of address to byte array, padding 0 ahead if length is odd.
+   */
+  public static byte[] addressToByteArray(String hexAddress) throws JsonRpcInvalidParamsException {
+    byte[] addressByte = ByteArray.fromHexString(hexAddress);
+    if (addressByte.length != DecodeUtil.ADDRESS_SIZE / 2 - 1) {
+      throw new JsonRpcInvalidParamsException("invalid address: " + hexAddress);
+    }
+    return new DataWord(addressByte).getLast20Bytes();
+  }
+
+  /**
+   * check if topic is hex string of size 64, padding 0 ahead if length is odd.
+   */
+  public static byte[] topicToByteArray(String hexTopic) throws JsonRpcInvalidParamsException {
+    byte[] topicByte = ByteArray.fromHexString(hexTopic);
+    if (topicByte.length != 32) {
+      throw new JsonRpcInvalidParamsException("invalid topic: " + hexTopic);
+    }
+    return topicByte;
   }
 
   public static boolean paramStringIsNull(String string) {
@@ -461,5 +481,25 @@ public class JsonRpcApiUtil {
     }
 
     return -1;
+  }
+
+  public static long getByJsonBlockId(String blockNumOrTag) throws JsonRpcInvalidParamsException {
+    if (PENDING_STR.equalsIgnoreCase(blockNumOrTag)) {
+      throw new JsonRpcInvalidParamsException("TAG pending not supported");
+    }
+    if (StringUtils.isEmpty(blockNumOrTag) || LATEST_STR.equalsIgnoreCase(blockNumOrTag)) {
+      return -1;
+    } else if (EARLIEST_STR.equalsIgnoreCase(blockNumOrTag)) {
+      return 0;
+    } else {
+      return ByteArray.jsonHexToLong(blockNumOrTag);
+    }
+  }
+
+  public static String generateFilterId() {
+    SecureRandom random = new SecureRandom();
+    byte[] uid = new byte[16]; // 128 bits are converted to 16 bytes
+    random.nextBytes(uid);
+    return ByteArray.toHexString(uid);
   }
 }
