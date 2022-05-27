@@ -27,6 +27,7 @@ import static org.tron.core.config.Parameter.DatabaseConstants.EXCHANGE_COUNT_LI
 import static org.tron.core.config.Parameter.DatabaseConstants.MARKET_COUNT_LIMIT_MAX;
 import static org.tron.core.config.Parameter.DatabaseConstants.PROPOSAL_COUNT_LIMIT_MAX;
 import static org.tron.core.services.jsonrpc.JsonRpcApiUtil.parseEnergyFee;
+import static org.tron.core.services.jsonrpc.TronJsonRpcImpl.EARLIEST_STR;
 
 import com.google.common.collect.ContiguousSet;
 import com.google.common.collect.DiscreteDomain;
@@ -526,7 +527,7 @@ public class Wallet {
       }
       dbManager.pushTransaction(trx);
       int num = tronNetService.fastBroadcastTransaction(message);
-      if (num == 0) {
+      if (num == 0 && minEffectiveConnection != 0) {
         return builder.setResult(false).setCode(response_code.NOT_ENOUGH_EFFECTIVE_CONNECTION)
             .setMessage(ByteString.copyFromUtf8("P2P broadcast failed.")).build();
       } else {
@@ -685,7 +686,7 @@ public class Wallet {
   }
 
   public Block getByJsonBlockId(String id) throws JsonRpcInvalidParamsException {
-    if ("earliest".equalsIgnoreCase(id)) {
+    if (EARLIEST_STR.equalsIgnoreCase(id)) {
       return getBlockByNum(0);
     } else if ("latest".equalsIgnoreCase(id)) {
       return getNowBlock();

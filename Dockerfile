@@ -21,11 +21,12 @@ RUN set -o errexit -o nounset \
     && cd $TMP_DIR \
     && git clone https://github.com/tronprotocol/java-tron.git \
     && cd java-tron \
-    && git checkout docker \
+    && git checkout master \
     && ./gradlew build -x test \
     && cd build/distributions \
     && unzip -o java-tron-1.0.0.zip \
     && mv java-tron-1.0.0 $BASE_DIR \
+    && wget -P $BASE_DIR/config https://raw.githubusercontent.com/tronprotocol/tron-deployment/master/main_net_config.conf \
     && rm -rf $TMP_DIR \
     && rm -rf ~/.gradle \
     && mv $JAVA_HOME/jre /usr/local \

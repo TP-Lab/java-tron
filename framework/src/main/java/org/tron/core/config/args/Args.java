@@ -374,6 +374,7 @@ public class Args extends CommonParameter {
                 .filter(StringUtils::isNotEmpty)
                 .orElse(Storage.getTransactionHistorySwitchFromConfig(config)));
 
+    PARAMETER.storage.setDefaultDbOptions(config);
     PARAMETER.storage.setPropertyMapFromConfig(config);
 
     PARAMETER.seedNode = new SeedNode();
@@ -805,8 +806,10 @@ public class Args extends CommonParameter {
     PARAMETER.historyBalanceLookup = config.hasPath(Constant.HISTORY_BALANCE_LOOKUP) && config
         .getBoolean(Constant.HISTORY_BALANCE_LOOKUP);
 
-    PARAMETER.openPrintLog = config.hasPath(Constant.OPEN_PRINT_LOG) && config
-        .getBoolean(Constant.OPEN_PRINT_LOG);
+    if (config.hasPath(Constant.OPEN_PRINT_LOG)) {
+      PARAMETER.openPrintLog = config.getBoolean(Constant.OPEN_PRINT_LOG);
+    }
+
     PARAMETER.openTransactionSort = config.hasPath(Constant.OPEN_TRANSACTION_SORT) && config
         .getBoolean(Constant.OPEN_TRANSACTION_SORT);
 
