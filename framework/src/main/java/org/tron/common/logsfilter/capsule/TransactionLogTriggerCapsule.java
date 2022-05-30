@@ -184,6 +184,7 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       transactionLogTrigger.setNetUsage(trxTrace.getReceipt().getNetUsage());
       transactionLogTrigger.setNetFee(trxTrace.getReceipt().getNetFee());
       transactionLogTrigger.setEnergyUsage(trxTrace.getReceipt().getEnergyUsage());
+      transactionLogTrigger.setMultiSignFee(trxTrace.getReceipt().getMultiSignFee());
     }
 
     // program result
@@ -205,6 +206,7 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       }
       transactionLogTrigger.setTriggerList(triggerList);
       transactionLogTrigger.setLogInfoList(programResult.getLogInfoList());
+      transactionLogTrigger.setRetFee(programResult.getRet().getFee());
 
       if (Objects.nonNull(contractResult) && contractResult.size() > 0) {
         transactionLogTrigger.setContractResult(Hex.toHexString(contractResult.toByteArray()));

@@ -82,6 +82,12 @@ public class TransactionLogTrigger extends Trigger {
   private List<LogInfo> logInfoList;
   @Getter
   @Setter
+  private long retFee;
+  @Getter
+  @Setter
+  private long multiSignFee;
+  @Getter
+  @Setter
   private long latestSolidifiedBlockNumber;
   //internal transaction
   @Getter
