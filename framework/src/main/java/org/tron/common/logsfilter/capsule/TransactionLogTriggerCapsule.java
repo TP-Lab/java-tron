@@ -4,12 +4,14 @@ import static org.tron.protos.Protocol.Transaction.Contract.ContractType.CreateS
 
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.bouncycastle.util.encoders.Hex;
 import org.tron.common.logsfilter.EventPluginLoader;
-import org.tron.common.logsfilter.trigger.ContractTrigger;
 import org.tron.common.logsfilter.trigger.InternalTransactionPojo;
 import org.tron.common.logsfilter.trigger.LogPojo;
 import org.tron.common.logsfilter.trigger.TransactionLogTrigger;
@@ -27,11 +29,6 @@ import org.tron.protos.contract.AssetIssueContractOuterClass.TransferAssetContra
 import org.tron.protos.contract.BalanceContract.TransferContract;
 import org.tron.protos.contract.SmartContractOuterClass.CreateSmartContract;
 import org.tron.protos.contract.SmartContractOuterClass.TriggerSmartContract;
-import org.tron.protos.contract.SmartContractOuterClass;
-
-import java.util.*;
-
-import static org.tron.protos.Protocol.Transaction.Contract.ContractType.*;
 
 @Slf4j
 public class TransactionLogTriggerCapsule extends TriggerCapsule {
@@ -137,37 +134,20 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
                             }
                             break;
                         case TriggerSmartContract:
-//                            TriggerSmartContract triggerSmartContract = contractParameter
-//                                    .unpack(TriggerSmartContract.class);
-//
-//                            if (Objects.nonNull(triggerSmartContract.getOwnerAddress())) {
-//                                transactionLogTrigger.setFromAddress(
-//                                        StringUtil.encode58Check(triggerSmartContract.getOwnerAddress().toByteArray()));
-//                            }
-//
-//                            if (Objects.nonNull(triggerSmartContract.getContractAddress())) {
-//                                transactionLogTrigger.setToAddress(StringUtil
-//                                        .encode58Check(triggerSmartContract.getContractAddress().toByteArray()));
-//                            }
-                            SmartContractOuterClass.TriggerSmartContract triggerSmartContract = contractParameter
-                                    .unpack(SmartContractOuterClass.TriggerSmartContract.class);
+                            TriggerSmartContract triggerSmartContract = contractParameter
+                                    .unpack(TriggerSmartContract.class);
 
-                            if (Objects.nonNull(triggerSmartContract)) {
-                                transactionLogTrigger.setAssetName("");
-                                transactionLogTrigger.setTokenId(triggerSmartContract.getTokenId());
-
-                                if (Objects.nonNull(triggerSmartContract.getOwnerAddress())) {
-                                    transactionLogTrigger.setFromAddress(
-                                            StringUtil.encode58Check(triggerSmartContract.getOwnerAddress().toByteArray()));
-                                }
-
-                                if (Objects.nonNull(triggerSmartContract.getContractAddress())) {
-                                    transactionLogTrigger.setToAddress(
-                                            StringUtil.encode58Check(triggerSmartContract.getContractAddress().toByteArray()));
-                                }
-                                transactionLogTrigger.setAssetAmount(triggerSmartContract.getCallValue());
-                                transactionLogTrigger.setAssetTokenAmount(triggerSmartContract.getCallTokenValue());
+                            if (Objects.nonNull(triggerSmartContract.getOwnerAddress())) {
+                                transactionLogTrigger.setFromAddress(
+                                        StringUtil.encode58Check(triggerSmartContract.getOwnerAddress().toByteArray()));
                             }
+
+                            if (Objects.nonNull(triggerSmartContract.getContractAddress())) {
+                                transactionLogTrigger.setToAddress(
+                                        StringUtil.encode58Check(triggerSmartContract.getContractAddress().toByteArray()));
+                            }
+                            transactionLogTrigger.setAssetName("");
+                            transactionLogTrigger.setAssetAmount(triggerSmartContract.getCallValue());
                             break;
                         case CreateSmartContract:
                             CreateSmartContract createSmartContract = contractParameter
@@ -206,18 +186,6 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
             ProgramResult programResult = trxTrace.getRuntime().getResult();
             ByteString contractResult = ByteString.copyFrom(programResult.getHReturn());
             ByteString contractAddress = ByteString.copyFrom(programResult.getContractAddress());
-            List<Map<String, Object>> triggerList = new ArrayList<Map<String, Object>>();
-            for (ContractTrigger trigger : trxTrace.getRuntimeResult().getTriggerList()) {
-                Map<String, Object> triggerCopy = new HashMap<String, Object>();
-                triggerCopy.put("transactionId", trigger.getTransactionId());
-                triggerCopy.put("callerAddress", trigger.getCallerAddress());
-                triggerCopy.put("originAddress", trigger.getOriginAddress());
-                triggerCopy.put("contractAddress", trigger.getContractAddress());
-                triggerCopy.put("creatorAddress", trigger.getCreatorAddress());
-                triggerCopy.put("rawData", trigger.getRawData());
-                triggerList.add(triggerCopy);
-            }
-            transactionLogTrigger.setTriggerList(triggerList);
             transactionLogTrigger.setLogInfoList(programResult.getLogInfoList());
             if (Objects.nonNull(contractResult) && contractResult.size() > 0) {
                 transactionLogTrigger.setContractResult(Hex.toHexString(contractResult.toByteArray()));
