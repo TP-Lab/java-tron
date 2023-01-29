@@ -1,12 +1,7 @@
 package org.tron.common.logsfilter.capsule;
 
-import static org.tron.protos.Protocol.Transaction.Contract.ContractType.CreateSmartContract;
-
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -25,10 +20,18 @@ import org.tron.protos.Protocol;
 import org.tron.protos.Protocol.Transaction;
 import org.tron.protos.Protocol.Transaction.Contract.ContractType;
 import org.tron.protos.Protocol.TransactionInfo;
+import org.tron.protos.contract.AccountContract;
 import org.tron.protos.contract.AssetIssueContractOuterClass.TransferAssetContract;
+import org.tron.protos.contract.BalanceContract;
 import org.tron.protos.contract.BalanceContract.TransferContract;
 import org.tron.protos.contract.SmartContractOuterClass.CreateSmartContract;
 import org.tron.protos.contract.SmartContractOuterClass.TriggerSmartContract;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+import static org.tron.protos.Protocol.Transaction.Contract.ContractType.CreateSmartContract;
 
 @Slf4j
 public class TransactionLogTriggerCapsule extends TriggerCapsule {
@@ -146,6 +149,12 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
                 transactionLogTrigger.setToAddress(StringUtil
                     .encode58Check(triggerSmartContract.getContractAddress().toByteArray()));
               }
+
+              long tokenId = triggerSmartContract.getTokenId();
+              if (tokenId != 0) {
+                transactionLogTrigger.setAssetName(String.valueOf(tokenId));
+              }
+              transactionLogTrigger.setAssetAmount(triggerSmartContract.getCallValue());
               break;
             case CreateSmartContract:
               CreateSmartContract createSmartContract = contractParameter
@@ -155,6 +164,37 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
                 transactionLogTrigger.setFromAddress(
                     StringUtil.encode58Check(createSmartContract.getOwnerAddress().toByteArray()));
               }
+              break;
+            case FreezeBalanceContract:
+              BalanceContract.FreezeBalanceContract freezeBalanceContract = contractParameter.unpack(BalanceContract.FreezeBalanceContract.class);
+              if (Objects.isNull(freezeBalanceContract)) {
+                break;
+              }
+              if (Objects.nonNull(freezeBalanceContract.getOwnerAddress())) {
+                transactionLogTrigger.setFromAddress(StringUtil.encode58Check(freezeBalanceContract.getOwnerAddress().toByteArray()));
+              }
+              if (Objects.nonNull(freezeBalanceContract.getReceiverAddress())) {
+                transactionLogTrigger.setToAddress(StringUtil.encode58Check(freezeBalanceContract.getReceiverAddress().toByteArray()));
+              }
+              transactionLogTrigger.setData(rawData.toString());
+              if (Objects.nonNull(freezeBalanceContract.getFrozenBalance())) {
+                transactionLogTrigger.setAssetAmount(freezeBalanceContract.getFrozenBalance());
+              }
+              break;
+            case AccountCreateContract:
+              AccountContract.AccountCreateContract accountCreateContract = contractParameter.unpack(AccountContract.AccountCreateContract.class);
+              if (Objects.isNull(accountCreateContract)) {
+                break;
+              }
+              if (Objects.nonNull(accountCreateContract.getOwnerAddress())) {
+                transactionLogTrigger.setFromAddress(StringUtil.encode58Check(accountCreateContract.getOwnerAddress().toByteArray()));
+              }
+              if (Objects.nonNull(accountCreateContract.getAccountAddress())) {
+                transactionLogTrigger.setToAddress(StringUtil.encode58Check(accountCreateContract.getAccountAddress().toByteArray()));
+              }
+              transactionLogTrigger.setData(rawData.toString());
+              Transaction.Result.contractResult contractResult = trxCapsule.getContractResult();
+//              transactionLogTrigger.setSpecFee(trxCapsule.getContractResult());
               break;
             default:
               break;
@@ -176,6 +216,8 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       transactionLogTrigger.setNetUsage(trxTrace.getReceipt().getNetUsage());
       transactionLogTrigger.setNetFee(trxTrace.getReceipt().getNetFee());
       transactionLogTrigger.setEnergyUsage(trxTrace.getReceipt().getEnergyUsage());
+      transactionLogTrigger.setMemoFee(trxTrace.getReceipt().getMemoFee());
+      transactionLogTrigger.setMultiSignFee(trxTrace.getReceipt().getMultiSignFee());
     }
 
     // program result

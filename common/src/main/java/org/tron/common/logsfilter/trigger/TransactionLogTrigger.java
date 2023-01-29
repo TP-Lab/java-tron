@@ -1,8 +1,9 @@
 package org.tron.common.logsfilter.trigger;
 
-import java.util.List;
 import lombok.Getter;
 import lombok.Setter;
+
+import java.util.List;
 
 public class TransactionLogTrigger extends Trigger {
 
@@ -33,6 +34,12 @@ public class TransactionLogTrigger extends Trigger {
   @Getter
   @Setter
   private long netFee;
+  @Getter
+  @Setter
+  private long memoFee;
+  @Getter
+  @Setter
+  private long multiSignFee;
   //contract
   @Getter
   @Setter
