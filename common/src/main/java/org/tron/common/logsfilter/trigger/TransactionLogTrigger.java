@@ -40,6 +40,9 @@ public class TransactionLogTrigger extends Trigger {
   @Getter
   @Setter
   private long multiSignFee;
+  @Getter
+  @Setter
+  private long fee;
   //contract
   @Getter
   @Setter

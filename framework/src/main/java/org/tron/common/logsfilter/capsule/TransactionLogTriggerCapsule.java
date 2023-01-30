@@ -218,6 +218,11 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       transactionLogTrigger.setEnergyUsage(trxTrace.getReceipt().getEnergyUsage());
       transactionLogTrigger.setMemoFee(trxTrace.getReceipt().getMemoFee());
       transactionLogTrigger.setMultiSignFee(trxTrace.getReceipt().getMultiSignFee());
+
+      long fee = trxTrace.getTransactionContext().getProgramResult().getRet().getFee();
+      if (fee != 0){
+        transactionLogTrigger.setFee(fee);
+      }
     }
 
     // program result
