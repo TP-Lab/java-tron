@@ -49,6 +49,9 @@ public class TransactionLogTrigger extends Trigger {
   private String result;
   @Getter
   @Setter
+  private String txResult;
+  @Getter
+  @Setter
   private String contractAddress;
   @Getter
   @Setter
@@ -61,7 +64,7 @@ public class TransactionLogTrigger extends Trigger {
   private long contractCallValue;
   @Getter
   @Setter
-  private String contractStruct;
+  private String contractData;
   @Getter
   @Setter
   private String contractResult;

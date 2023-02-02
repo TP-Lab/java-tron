@@ -1,6 +1,5 @@
 package org.tron.common.logsfilter.capsule;
 
-import com.google.gson.Gson;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import lombok.Getter;
@@ -16,12 +15,12 @@ import org.tron.common.runtime.ProgramResult;
 import org.tron.common.utils.StringUtil;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
+import org.tron.core.capsule.TransactionResultCapsule;
 import org.tron.core.db.TransactionTrace;
 import org.tron.protos.Protocol;
 import org.tron.protos.Protocol.Transaction;
 import org.tron.protos.Protocol.Transaction.Contract.ContractType;
 import org.tron.protos.Protocol.TransactionInfo;
-import org.tron.protos.contract.*;
 import org.tron.protos.contract.AssetIssueContractOuterClass.TransferAssetContract;
 import org.tron.protos.contract.BalanceContract.TransferContract;
 import org.tron.protos.contract.SmartContractOuterClass.CreateSmartContract;
@@ -68,6 +67,13 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
     if (Objects.nonNull(trxCapsule.getContractRet())) {
       transactionLogTrigger.setResult(trxCapsule.getContractRet().toString());
     }
+    if (Objects.nonNull(trxTrace) && Objects.nonNull(trxTrace.getTransactionContext()) && Objects.nonNull(trxTrace.getTransactionContext().getProgramResult())){
+      TransactionResultCapsule ret = trxTrace.getTransactionContext().getProgramResult().getRet();
+      if (Objects.nonNull(ret)){
+        transactionLogTrigger.setTxResult(ret.getTransactionResult().toString());
+        transactionLogTrigger.setFee(ret.getFee());
+      }
+    }
 
     Transaction.raw rawData = trxCapsule.getInstance().getRawData();
     ContractType contractType = null;
@@ -90,7 +96,7 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
 
         transactionLogTrigger.setContractCallValue(TransactionCapsule.getCallValue(contract));
       }
-      Gson json = new Gson();
+
       if (Objects.nonNull(contractParameter) && Objects.nonNull(contract)) {
         try {
           switch (contractType) {
@@ -159,59 +165,8 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
                     StringUtil.encode58Check(createSmartContract.getOwnerAddress().toByteArray()));
               }
               break;
-            case AssetIssueContract: //1、发行TRC10通证：1,024 TRX
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(AssetIssueContractOuterClass.AssetIssueContract.class)));
-              break;
-            case WitnessCreateContract: //2、申请成为SR候选人： 9,999 TRX
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(WitnessContract.WitnessCreateContract.class)));
-              break;
-            case ExchangeCreateContract: //3、创建Bancor交易：1,024 TRX
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(ExchangeContract.ExchangeCreateContract.class)));
-              break;
-            case AccountPermissionUpdateContract: //4、更新账户权限：100 TRX
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(AccountContract.AccountPermissionUpdateContract.class)));
-              break;
-            case AccountCreateContract: //5、激活账户：1 TRX
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(AccountContract.AccountCreateContract.class)));
-              break;
-            case VoteWitnessContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(WitnessContract.VoteWitnessContract.class)));
-              break;
-            case WitnessUpdateContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(WitnessContract.WitnessUpdateContract.class)));
-              break;
-            case ParticipateAssetIssueContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(AssetIssueContractOuterClass.ParticipateAssetIssueContract.class)));
-              break;
-            case AccountUpdateContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(AccountContract.AccountUpdateContract.class)));
-              break;
-            case FreezeBalanceContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(BalanceContract.FreezeBalanceContract.class)));
-              break;
-            case UnfreezeBalanceContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(BalanceContract.UnfreezeBalanceContract.class)));
-              break;
-            case WithdrawBalanceContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(BalanceContract.WithdrawBalanceContract.class)));
-              break;
-            case UnfreezeAssetContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(AssetIssueContractOuterClass.UnfreezeAssetContract.class)));
-              break;
-            case UpdateAssetContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(AssetIssueContractOuterClass.UpdateAssetContract.class)));
-              break;
-            case ProposalCreateContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(ProposalContract.ProposalCreateContract.class)));
-              break;
-            case ProposalApproveContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(ProposalContract.ProposalApproveContract.class)));
-              break;
-            case ProposalDeleteContract:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter.unpack(ProposalContract.ProposalDeleteContract.class)));
-              break;
             default:
-              transactionLogTrigger.setContractStruct(json.toJson(contractParameter));
+              transactionLogTrigger.setContractData(contractParameter.toString());
               break;
           }
         } catch (Exception e) {
@@ -233,11 +188,6 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       transactionLogTrigger.setEnergyUsage(trxTrace.getReceipt().getEnergyUsage());
       transactionLogTrigger.setMemoFee(trxTrace.getReceipt().getMemoFee());
       transactionLogTrigger.setMultiSignFee(trxTrace.getReceipt().getMultiSignFee());
-
-      long fee = trxTrace.getTransactionContext().getProgramResult().getRet().getFee();
-      if (fee != 0){
-        transactionLogTrigger.setFee(fee);
-      }
     }
 
     // program result

@@ -2,16 +2,18 @@ package org.tron.core.capsule;
 
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
-import java.util.List;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.tron.core.exception.BadItemException;
 import org.tron.protos.Protocol.MarketOrderDetail;
 import org.tron.protos.Protocol.Transaction.Result;
 import org.tron.protos.Protocol.Transaction.Result.contractResult;
 
+import java.util.List;
+
 @Slf4j(topic = "capsule")
 public class TransactionResultCapsule implements ProtoCapsule<Result> {
-
+  @Getter
   private Result transactionResult;
 
   /**
