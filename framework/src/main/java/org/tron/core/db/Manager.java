@@ -2227,6 +2227,8 @@ public class Manager {
     }
 
     // process transaction trigger
+    logger.info("eventPluginLoaded:{}",eventPluginLoaded);
+    logger.info("eventLoaded:{}",EventPluginLoader.getInstance().isTransactionLogTriggerEnable());
     if (eventPluginLoaded && EventPluginLoader.getInstance().isTransactionLogTriggerEnable()) {
       List<BlockCapsule> capsuleList = new ArrayList<>();
       if (EventPluginLoader.getInstance().isTransactionLogTriggerSolidified()) {
