@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.bouncycastle.util.encoders.Hex;
+import org.eclipse.jetty.util.ajax.JSON;
 import org.pf4j.CompoundPluginDescriptorFinder;
 import org.pf4j.DefaultPluginManager;
 import org.pf4j.ManifestPluginDescriptorFinder;
@@ -214,7 +215,7 @@ public class EventPluginLoader {
   }
 
   public boolean start(EventPluginConfig config) {
-
+     logger.info("EventPluginConfig:{}", JSON.toString(config));
     if (Objects.isNull(config)) {
       return false;
     }
