@@ -1076,6 +1076,12 @@ public class Manager {
     }
 
     if (CollectionUtils.isNotEmpty(binaryTree.getKey())) {
+      List<KhaosBlock> second = new ArrayList<>(binaryTree.getValue());
+      Collections.reverse(second);
+      for (KhaosBlock item : second) {
+        item.getBlk().setSwitchStatus(1);
+        processTransactionTrigger(item.getBlk());
+      }
       List<KhaosBlock> first = new ArrayList<>(binaryTree.getKey());
       Collections.reverse(first);
       for (KhaosBlock item : first) {
@@ -1083,6 +1089,7 @@ public class Manager {
         // todo  process the exception carefully later
         try (ISession tmpSession = revokingStore.buildSession()) {
           applyBlock(item.getBlk().setSwitch(true));
+          processTransactionTrigger(item.getBlk());
           tmpSession.commit();
         } catch (AccountResourceInsufficientException
             | ValidateSignatureException
@@ -1114,13 +1121,17 @@ public class Manager {
                 .equals(binaryTree.getValue().peekLast().getParentHash())) {
               eraseBlock();
             }
-
-            List<KhaosBlock> second = new ArrayList<>(binaryTree.getValue());
+            for (KhaosBlock item2 : first) {
+              item2.getBlk().setSwitchStatus(1);
+              processTransactionTrigger(item.getBlk());
+            }
+            List<KhaosBlock> second2 = new ArrayList<>(binaryTree.getValue());
             Collections.reverse(second);
-            for (KhaosBlock khaosBlock : second) {
+            for (KhaosBlock khaosBlock : second2) {
               // todo  process the exception carefully later
               try (ISession tmpSession = revokingStore.buildSession()) {
                 applyBlock(khaosBlock.getBlk().setSwitch(true));
+                processTransactionTrigger(khaosBlock.getBlk());
                 tmpSession.commit();
               } catch (AccountResourceInsufficientException
                   | ValidateSignatureException

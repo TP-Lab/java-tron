@@ -47,7 +47,7 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       int txIndex, long preCumulativeEnergyUsed, long preCumulativeLogCount,
       TransactionInfo transactionInfo, long energyUnitPrice) {
     transactionLogTrigger = new TransactionLogTrigger();
-
+    transactionLogTrigger.setSwitchStatus(blockCapsule.getSwitchStatus());
     String blockHash = "";
     if (Objects.nonNull(blockCapsule)) {
       blockHash = blockCapsule.getBlockId().toString();
