@@ -43,6 +43,7 @@ import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
 import org.bouncycastle.util.encoders.Hex;
+import org.eclipse.jetty.util.ajax.JSON;
 import org.quartz.CronExpression;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -2281,6 +2282,7 @@ public class Manager {
     TransactionLogTriggerCapsule trx = new TransactionLogTriggerCapsule(trxCap, blockCap);
     trx.setLatestSolidifiedBlockNumber(getDynamicPropertiesStore()
         .getLatestSolidifiedBlockNum());
+    logger.info("trxQueue:{}", JSON.toString(trx));
     if (!triggerCapsuleQueue.offer(trx)) {
       logger.info("Too many triggers, transaction trigger lost: {}.", trxCap.getTransactionId());
     }
