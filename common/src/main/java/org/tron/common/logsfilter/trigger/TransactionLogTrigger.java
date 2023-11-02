@@ -58,6 +58,9 @@ public class TransactionLogTrigger extends Trigger {
   private String contractType;
   @Getter
   @Setter
+  private String contractName;
+  @Getter
+  @Setter
   private long feeLimit;
   @Getter
   @Setter

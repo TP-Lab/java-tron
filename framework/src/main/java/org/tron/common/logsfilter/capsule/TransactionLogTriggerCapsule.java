@@ -89,8 +89,8 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       if (Objects.nonNull(contract)) {
         contractType = contract.getType();
         if (Objects.nonNull(contractType)) {
-          logger.info("name:"+contractType.name());
-          transactionLogTrigger.setContractType(contractType.name());
+          transactionLogTrigger.setContractName(contractType.name());
+          transactionLogTrigger.setContractType(contractType.toString());
         }
 
         contractParameter = contract.getParameter();
