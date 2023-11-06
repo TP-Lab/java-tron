@@ -1080,6 +1080,7 @@ public class Manager {
       List<KhaosBlock> second = new ArrayList<>(binaryTree.getValue());
       Collections.reverse(second);
       for (KhaosBlock item : second) {
+        item.getBlk().setFork(true);
         item.getBlk().setSwitchStatus(1);
         processTransactionTrigger(item.getBlk());
       }
@@ -1089,6 +1090,7 @@ public class Manager {
         Exception exception = null;
         // todo  process the exception carefully later
         try (ISession tmpSession = revokingStore.buildSession()) {
+          item.getBlk().setFork(false);
           applyBlock(item.getBlk().setSwitch(true));
           processTransactionTrigger(item.getBlk());
           tmpSession.commit();
@@ -1124,6 +1126,7 @@ public class Manager {
             }
             for (KhaosBlock item2 : first) {
               item2.getBlk().setSwitchStatus(1);
+              item.getBlk().setFork(true);
               processTransactionTrigger(item.getBlk());
             }
             List<KhaosBlock> second2 = new ArrayList<>(binaryTree.getValue());
@@ -1131,6 +1134,7 @@ public class Manager {
             for (KhaosBlock khaosBlock : second2) {
               // todo  process the exception carefully later
               try (ISession tmpSession = revokingStore.buildSession()) {
+                item.getBlk().setFork(false);
                 applyBlock(khaosBlock.getBlk().setSwitch(true));
                 processTransactionTrigger(khaosBlock.getBlk());
                 tmpSession.commit();

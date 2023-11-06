@@ -56,6 +56,10 @@ public class BlockCapsule implements ProtoCapsule<Block> {
   @Getter
   @Setter
   private int switchStatus;
+
+  @Getter
+  @Setter
+  private boolean fork;
   private BlockId blockId = new BlockId(Sha256Hash.ZERO_HASH, 0);
 
   private Block block;

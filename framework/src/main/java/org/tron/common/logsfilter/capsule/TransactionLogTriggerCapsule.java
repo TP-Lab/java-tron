@@ -249,6 +249,7 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       }
       transactionLogTrigger.setLogList(logPojoList);
     }
+    transactionLogTrigger.setAssetName(transactionInfo.getAssetIssueID());
   }
 
   public void setLatestSolidifiedBlockNumber(long latestSolidifiedBlockNumber) {
