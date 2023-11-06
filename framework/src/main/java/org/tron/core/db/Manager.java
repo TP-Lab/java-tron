@@ -83,15 +83,8 @@ import org.tron.core.ChainBaseManager;
 import org.tron.core.Constant;
 import org.tron.core.Wallet;
 import org.tron.core.actuator.ActuatorCreator;
-import org.tron.core.capsule.AccountCapsule;
-import org.tron.core.capsule.BlockBalanceTraceCapsule;
-import org.tron.core.capsule.BlockCapsule;
+import org.tron.core.capsule.*;
 import org.tron.core.capsule.BlockCapsule.BlockId;
-import org.tron.core.capsule.BytesCapsule;
-import org.tron.core.capsule.TransactionCapsule;
-import org.tron.core.capsule.TransactionInfoCapsule;
-import org.tron.core.capsule.TransactionRetCapsule;
-import org.tron.core.capsule.WitnessCapsule;
 import org.tron.core.capsule.utils.TransactionUtil;
 import org.tron.core.config.Parameter.ChainConstant;
 import org.tron.core.config.args.Args;
@@ -2273,6 +2266,16 @@ public class Manager {
       long cumulativeLogCount, final TransactionInfo transactionInfo, long energyUnitPrice) {
     TransactionLogTriggerCapsule trx = new TransactionLogTriggerCapsule(trxCap, blockCap,
         index, preCumulativeEnergyUsed, cumulativeLogCount, transactionInfo, energyUnitPrice);
+    String assetName = trx.getTransactionLogTrigger().getAssetName();
+    logger.info("assetNameInfo:"+assetName);
+    if (Objects.nonNull(assetName)){
+      AssetIssueStore assetIssueStore = chainBaseManager.getAssetIssueStore();
+      AssetIssueCapsule assetIssueCapsule = assetIssueStore.get(assetName.getBytes());
+      if (Objects.nonNull(assetIssueCapsule)) {
+        logger.info("assetIssueCapsuleId:" +assetIssueCapsule.getId());
+        trx.getTransactionLogTrigger().setAssetName(assetIssueCapsule.getId());
+      }
+    }
     trx.setLatestSolidifiedBlockNumber(getDynamicPropertiesStore()
         .getLatestSolidifiedBlockNum());
     if (!triggerCapsuleQueue.offer(trx)) {
