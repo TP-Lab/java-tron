@@ -109,10 +109,9 @@ public class TransactionLogTrigger extends Trigger {
   @Getter
   @Setter
   private long energyUnitPrice;
-  //0没有被切换的链 1.链已经被切换了 2.所属区块切链时，执行逻辑失败了
   @Getter
   @Setter
-  private int switchStatus;
+  private boolean fork;
 
 
 

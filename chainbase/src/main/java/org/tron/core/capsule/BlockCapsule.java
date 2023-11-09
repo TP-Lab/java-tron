@@ -52,11 +52,6 @@ public class BlockCapsule implements ProtoCapsule<Block> {
   @Getter
   @Setter
   private TransactionRetCapsule result;
-
-  @Getter
-  @Setter
-  private int switchStatus;
-
   @Getter
   @Setter
   private boolean fork;
