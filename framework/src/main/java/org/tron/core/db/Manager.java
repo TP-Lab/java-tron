@@ -1070,21 +1070,13 @@ public class Manager {
     }
 
     if (CollectionUtils.isNotEmpty(binaryTree.getKey())) {
-      List<KhaosBlock> second = new ArrayList<>(binaryTree.getValue());
-      Collections.reverse(second);
-      for (KhaosBlock itemSecond : second) {
-        itemSecond.getBlk().setFork(true);
-        processTransactionTrigger(itemSecond.getBlk());
-      }
       List<KhaosBlock> first = new ArrayList<>(binaryTree.getKey());
       Collections.reverse(first);
       for (KhaosBlock item : first) {
         Exception exception = null;
         // todo  process the exception carefully later
         try (ISession tmpSession = revokingStore.buildSession()) {
-          item.getBlk().setFork(false);
           applyBlock(item.getBlk().setSwitch(true));
-          processTransactionTrigger(item.getBlk());
           tmpSession.commit();
         } catch (AccountResourceInsufficientException
             | ValidateSignatureException
@@ -1116,18 +1108,13 @@ public class Manager {
                 .equals(binaryTree.getValue().peekLast().getParentHash())) {
               eraseBlock();
             }
-            for (KhaosBlock itemFirst : first) {
-              itemFirst.getBlk().setFork(true);
-              processTransactionTrigger(itemFirst.getBlk());
-            }
-            List<KhaosBlock> second2 = new ArrayList<>(binaryTree.getValue());
+
+            List<KhaosBlock> second = new ArrayList<>(binaryTree.getValue());
             Collections.reverse(second);
-            for (KhaosBlock khaosBlock : second2) {
+            for (KhaosBlock khaosBlock : second) {
               // todo  process the exception carefully later
               try (ISession tmpSession = revokingStore.buildSession()) {
-                khaosBlock.getBlk().setFork(false);
                 applyBlock(khaosBlock.getBlk().setSwitch(true));
-                processTransactionTrigger(khaosBlock.getBlk());
                 tmpSession.commit();
               } catch (AccountResourceInsufficientException
                   | ValidateSignatureException
@@ -1142,7 +1129,20 @@ public class Manager {
                 logger.warn(e.getMessage(), e);
               }
             }
+          }else{
+            //todo
+            List<KhaosBlock> second = new ArrayList<>(binaryTree.getValue());
+            Collections.reverse(second);
+            for (KhaosBlock itemSecond : second) {
+              itemSecond.getBlk().setFork(true);
+              processTransactionTrigger(itemSecond.getBlk());
+            }
+            for (KhaosBlock itemFirst : first) {
+              processTransactionTrigger(itemFirst.getBlk());
+            }
+
           }
+
         }
       }
     }
