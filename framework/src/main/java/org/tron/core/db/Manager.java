@@ -1072,9 +1072,9 @@ public class Manager {
     if (CollectionUtils.isNotEmpty(binaryTree.getKey())) {
       List<KhaosBlock> second = new ArrayList<>(binaryTree.getValue());
       Collections.reverse(second);
-      for (KhaosBlock item : second) {
-        item.getBlk().setFork(true);
-        processTransactionTrigger(item.getBlk());
+      for (KhaosBlock itemSecond : second) {
+        itemSecond.getBlk().setFork(true);
+        processTransactionTrigger(itemSecond.getBlk());
       }
       List<KhaosBlock> first = new ArrayList<>(binaryTree.getKey());
       Collections.reverse(first);
@@ -1117,7 +1117,7 @@ public class Manager {
               eraseBlock();
             }
             for (KhaosBlock itemFirst : first) {
-              item.getBlk().setFork(true);
+              itemFirst.getBlk().setFork(true);
               processTransactionTrigger(itemFirst.getBlk());
             }
             List<KhaosBlock> second2 = new ArrayList<>(binaryTree.getValue());
