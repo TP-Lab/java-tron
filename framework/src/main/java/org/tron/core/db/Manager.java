@@ -2269,7 +2269,7 @@ public class Manager {
 //    if (dynamicStore.getAllowSameTokenName() == 0) {
     logger.info("assetNameInfo:"+assetName);
     logger.info("sameTokenName:"+dynamicStore.getAllowSameTokenName());
-    if (Objects.nonNull(assetName) && dynamicStore.getAllowSameTokenName()==0){
+    if ((Objects.nonNull(assetName) && dynamicStore.getAllowSameTokenName()==0) || "trx".equals(assetName)){
       AssetIssueStore assetIssueStore = chainBaseManager.getAssetIssueStore();
       AssetIssueCapsule assetIssueCapsule = assetIssueStore.get(assetName.getBytes());
       if (Objects.nonNull(assetIssueCapsule)) {
