@@ -2265,8 +2265,11 @@ public class Manager {
     TransactionLogTriggerCapsule trx = new TransactionLogTriggerCapsule(trxCap, blockCap,
         index, preCumulativeEnergyUsed, cumulativeLogCount, transactionInfo, energyUnitPrice);
     String assetName = trx.getTransactionLogTrigger().getAssetName();
+    DynamicPropertiesStore dynamicStore = chainBaseManager.getDynamicPropertiesStore();
+//    if (dynamicStore.getAllowSameTokenName() == 0) {
     logger.info("assetNameInfo:"+assetName);
-    if (Objects.nonNull(assetName)){
+    logger.info("sameTokenName:"+dynamicStore.getAllowSameTokenName());
+    if (Objects.nonNull(assetName) && dynamicStore.getAllowSameTokenName()==0){
       AssetIssueStore assetIssueStore = chainBaseManager.getAssetIssueStore();
       AssetIssueCapsule assetIssueCapsule = assetIssueStore.get(assetName.getBytes());
       if (Objects.nonNull(assetIssueCapsule)) {
