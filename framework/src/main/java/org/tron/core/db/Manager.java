@@ -2266,14 +2266,18 @@ public class Manager {
         index, preCumulativeEnergyUsed, cumulativeLogCount, transactionInfo, energyUnitPrice);
     String assetName = trx.getTransactionLogTrigger().getAssetName();
     DynamicPropertiesStore dynamicStore = chainBaseManager.getDynamicPropertiesStore();
-//    if (dynamicStore.getAllowSameTokenName() == 0) {
     logger.info("assetNameInfo:"+assetName);
-    logger.info("sameTokenName:"+dynamicStore.getAllowSameTokenName());
+    logger.info("sameTokenName:"  +dynamicStore.getAllowSameTokenName());
+    //做两个判断满足需要获取tokenId的条件，
+    //1.当AllowSameTokenName==0时，assetName为tokenName。2.为原生币对时
     if ((Objects.nonNull(assetName) && dynamicStore.getAllowSameTokenName()==0) || "trx".equals(assetName)){
+       //获取币种底层数据库的查询接口
       AssetIssueStore assetIssueStore = chainBaseManager.getAssetIssueStore();
+      //通过唯一性的assetName来获取币种
       AssetIssueCapsule assetIssueCapsule = assetIssueStore.get(assetName.getBytes());
       if (Objects.nonNull(assetIssueCapsule)) {
         logger.info("assetIssueCapsuleId:" +assetIssueCapsule.getId());
+        //获取币种的id来替换原来的tokenName
         trx.getTransactionLogTrigger().setAssetName(assetIssueCapsule.getId());
       }
     }
