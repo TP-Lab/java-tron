@@ -47,6 +47,7 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       int txIndex, long preCumulativeEnergyUsed, long preCumulativeLogCount,
       TransactionInfo transactionInfo, long energyUnitPrice) {
     transactionLogTrigger = new TransactionLogTrigger();
+     //区块标记分叉，对应区块的推送数据也会标记分叉
     transactionLogTrigger.setFork(blockCapsule.isFork());
     String blockHash = "";
     if (Objects.nonNull(blockCapsule)) {

@@ -1130,14 +1130,17 @@ public class Manager {
               }
             }
           }else{
-            //todo
             List<KhaosBlock> second = new ArrayList<>(binaryTree.getValue());
             Collections.reverse(second);
+             //过往分叉的数据标记分叉作废，重新推送
             for (KhaosBlock itemSecond : second) {
               itemSecond.getBlk().setFork(true);
+              //推送数据的接口
               processTransactionTrigger(itemSecond.getBlk());
             }
+            //切换过来的新数据进行补推
             for (KhaosBlock itemFirst : first) {
+              //推送数据的接口
               processTransactionTrigger(itemFirst.getBlk());
             }
 
