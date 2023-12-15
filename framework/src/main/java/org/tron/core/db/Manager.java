@@ -2264,7 +2264,9 @@ public class Manager {
       long cumulativeLogCount, final TransactionInfo transactionInfo, long energyUnitPrice) {
     TransactionLogTriggerCapsule trx = new TransactionLogTriggerCapsule(trxCap, blockCap,
         index, preCumulativeEnergyUsed, cumulativeLogCount, transactionInfo, energyUnitPrice);
+    //获取项目的assetName
     String assetName = trx.getTransactionLogTrigger().getAssetName();
+    //获取项目的状态
     DynamicPropertiesStore dynamicStore = chainBaseManager.getDynamicPropertiesStore();
     logger.info("assetNameInfo:"+assetName);
     logger.info("sameTokenName:"  +dynamicStore.getAllowSameTokenName());
