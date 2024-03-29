@@ -105,6 +105,7 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
         contractParameter = contract.getParameter();
 
         transactionLogTrigger.setContractCallValue(TransactionCapsule.getCallValue(contract));
+        transactionLogTrigger.setContractData(contractParameter.toString());
       }
 
       if (Objects.nonNull(contractParameter) && Objects.nonNull(contract)) {
@@ -258,7 +259,6 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
               }
               break;
             default:
-              transactionLogTrigger.setContractData(contractParameter.toString());
               break;
           }
         } catch (Exception e) {
