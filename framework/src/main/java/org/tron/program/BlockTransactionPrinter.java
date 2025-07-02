@@ -9,6 +9,7 @@ import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.tron.common.application.Application;
 import org.tron.common.application.ApplicationFactory;
 import org.tron.common.application.TronApplicationContext;
+import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
 import org.tron.common.utils.StringUtil;
 import org.tron.core.ChainBaseManager;
