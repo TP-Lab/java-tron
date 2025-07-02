@@ -35,19 +35,25 @@ import java.util.List;
  *    ./gradlew build -x test
  * 
  * 2. Run the program with start and end block numbers:
- *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter <startBlockNum> <endBlockNum>
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter <startBlockNum> <endBlockNum> [options]
  * 
- * Example:
+ * Examples:
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 73592989 73592991 -c main_net_config.conf -d /tron/light/
+ * 
+ * Options:
+ *    -c <config_file>: Specify a custom configuration file
+ *    -d <data_dir>: Specify a custom data directory
+ *    (Other standard TRON node options are also supported)
  * 
  * The program will:
- * - Connect to the TRON blockchain using the configuration in config.conf
+ * - Connect to the TRON blockchain using the specified configuration
  * - Retrieve blocks in the specified range (from startBlockNum to endBlockNum)
  * - Print detailed information about each block and its transactions
  * - Show a summary of the total blocks and transactions processed
  * 
  * Note: Make sure you have a running TRON node or a valid database directory
- * configured in config.conf to access the blockchain data.
+ * configured to access the blockchain data.
  */
 @Slf4j(topic = "app")
 public class BlockTransactionPrinter {
@@ -77,10 +83,17 @@ public class BlockTransactionPrinter {
    * @param args Command line arguments:
    *             args[0] - Start block number (inclusive)
    *             args[1] - End block number (inclusive)
+   *             args[2+] - Optional configuration parameters:
+   *                       -c <config_file>: Specify a custom configuration file
+   *                       -d <data_dir>: Specify a custom data directory
+   *                       (Other standard TRON node options are also supported)
    */
   public static void main(String[] args) {
     if (args.length < 2) {
-      System.out.println("Usage: BlockTransactionPrinter <startBlockNum> <endBlockNum>");
+      System.out.println("Usage: BlockTransactionPrinter <startBlockNum> <endBlockNum> [options]");
+      System.out.println("Options:");
+      System.out.println("  -c <config_file>: Specify a custom configuration file");
+      System.out.println("  -d <data_dir>: Specify a custom data directory");
       return;
     }
 
@@ -94,7 +107,15 @@ public class BlockTransactionPrinter {
       }
 
       // Initialize TRON environment
-      Args.setParam(args, Constant.TESTNET_CONF);
+      // Create a new array without the block numbers for Args.setParam
+      String[] configArgs;
+      if (args.length > 2) {
+        configArgs = new String[args.length - 2];
+        System.arraycopy(args, 2, configArgs, 0, args.length - 2);
+      } else {
+        configArgs = new String[0];
+      }
+      Args.setParam(configArgs, Constant.TESTNET_CONF);
       DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
       beanFactory.setAllowCircularReferences(false);
       TronApplicationContext context = new TronApplicationContext(beanFactory);
