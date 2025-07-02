@@ -14,13 +14,18 @@ import org.tron.common.utils.ByteArray;
 import org.tron.common.utils.StringUtil;
 import org.tron.core.ChainBaseManager;
 import org.tron.core.Constant;
+import org.tron.core.Wallet;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
 import org.tron.core.config.DefaultConfig;
 import org.tron.core.config.args.Args;
+import org.tron.core.services.http.JsonFormat;
+import org.tron.core.services.http.Util;
 import org.tron.protos.Protocol.Transaction;
 import org.tron.protos.Protocol.Transaction.Contract.ContractType;
 import org.tron.protos.Protocol.Transaction.Result;
+import org.tron.protos.Protocol.TransactionInfo;
+import org.tron.protos.Protocol.TransactionInfo.Log;
 import org.tron.protos.contract.BalanceContract.TransferContract;
 
 import java.util.List;
@@ -129,8 +134,9 @@ public class BlockTransactionPrinter {
       Application appT = ApplicationFactory.create(context);
       appT.startup();
 
-      // Get ChainBaseManager instance
+      // Get ChainBaseManager and Wallet instances
       ChainBaseManager chainBaseManager = context.getBean(ChainBaseManager.class);
+      Wallet wallet = context.getBean(Wallet.class);
 
       System.out.println("=== Printing transactions from block " + startBlockNum + " to " + endBlockNum + " ===");
 
@@ -174,60 +180,20 @@ public class BlockTransactionPrinter {
           } else {
             for (int i = 0; i < transactions.size(); i++) {
               TransactionCapsule trx = transactions.get(i);
-              Transaction transaction = trx.getInstance();
               String txId = trx.getTransactionId().toString();
-
-              // Get transaction status if available
-              String status = "Unknown";
-              if (transaction.getRetCount() > 0) {
-                Result.contractResult contractResult = transaction.getRet(0).getContractRet();
-                status = contractResult.toString();
-              }
+              ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
 
               System.out.println("  Transaction #" + (i + 1) + ":");
-              System.out.println("    ID: " + txId);
-              System.out.println("    Status: " + status);
 
-              // Print transaction details
-              if (transaction.getRawData().getContractCount() > 0) {
-                Transaction.Contract contract = transaction.getRawData().getContract(0);
-                ContractType contractType = contract.getType();
-                System.out.println("    Type: " + contractType);
+              // Get transaction info using wallet.getTransactionInfoById
+              TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
 
-                // Print owner address if available
-                byte[] ownerAddress = trx.getOwnerAddress();
-                if (ownerAddress != null && ownerAddress.length > 0) {
-                  System.out.println("    From: " + StringUtil.encode58Check(ownerAddress));
-                }
-
-                // Print to address if available
-                byte[] toAddress = TransactionCapsule.getToAddress(contract);
-                if (toAddress != null && toAddress.length > 0) {
-                  System.out.println("    To: " + StringUtil.encode58Check(toAddress));
-                }
-
-                // Print additional details based on contract type
-                try {
-                  if (contractType == ContractType.TransferContract) {
-                    TransferContract transferContract = contract.getParameter()
-                        .unpack(TransferContract.class);
-                    long amount = transferContract.getAmount();
-                    System.out.println("    Amount: " + amount + " SUN (" + (amount / 1_000_000.0) + " TRX)");
-                  } else if (contractType == ContractType.TriggerSmartContract) {
-                    System.out.println("    Call Value: " + TransactionCapsule.getCallValue(contract) + " SUN");
-                    // Could add more details about the smart contract call here
-                  }
-                  // Add more contract types as needed
-                } catch (InvalidProtocolBufferException e) {
-                  System.out.println("    Error parsing contract details: " + e.getMessage());
-                }
+              if (transactionInfo != null) {
+                // Print transaction info in the same format as wallet/gettransactioninfobyid
+                System.out.println(JsonFormat.printToString(transactionInfo, true));
+              } else {
+                System.out.println("    No transaction info found for ID: " + txId);
               }
-
-              // Print timestamp
-              System.out.println("    Timestamp: " + dateFormat.format(new Date(transaction.getRawData().getTimestamp())));
-
-              // Print expiration
-              System.out.println("    Expiration: " + dateFormat.format(new Date(transaction.getRawData().getExpiration())));
             }
           }
         }
