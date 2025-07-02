@@ -153,12 +153,25 @@ public class LevelDbDataSourceImpl extends DbStat implements DbSourceInter<byte[
       }
     } catch (IOException e) {
       if (e.getMessage().contains("Corruption:")) {
-        logger.error("Database {} corrupted, please delete database directory({}) and restart.",
-            dataBaseName, parentPath, e);
+        logger.error("Database {} corrupted, attempting to repair by resetting the database.",
+            dataBaseName, e);
+
+        // Try to repair by deleting the corrupted database and creating a new one
+        try {
+          closeDB();
+          FileUtil.recursiveDelete(getDbPath().toString());
+          Files.createDirectories(dbPath.getParent());
+          database = factory.open(dbPath.toFile(), dbOptions);
+          logger.info("Database {} has been reset and reopened successfully.", dataBaseName);
+        } catch (Exception resetException) {
+          logger.error("Failed to reset and reopen database {}. Please delete database directory({}) and restart.",
+              dataBaseName, parentPath, resetException);
+          throw new TronError(e, TronError.ErrCode.LEVELDB_INIT);
+        }
       } else {
         logger.error("Open Database {} failed", dataBaseName, e);
+        throw new TronError(e, TronError.ErrCode.LEVELDB_INIT);
       }
-      throw new TronError(e, TronError.ErrCode.LEVELDB_INIT);
     }
   }
 
