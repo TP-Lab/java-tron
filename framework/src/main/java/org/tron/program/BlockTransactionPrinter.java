@@ -116,6 +116,10 @@ public class BlockTransactionPrinter {
         configArgs = new String[0];
       }
       Args.setParam(configArgs, Constant.TESTNET_CONF);
+
+      // Disable asset update to avoid "Asset num is wrong!" error
+      CommonParameter.getInstance().setNeedToUpdateAsset(false);
+
       DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
       beanFactory.setAllowCircularReferences(false);
       TronApplicationContext context = new TronApplicationContext(beanFactory);
