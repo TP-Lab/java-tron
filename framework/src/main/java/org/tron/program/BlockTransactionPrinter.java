@@ -18,7 +18,7 @@ import org.tron.core.Constant;
 import org.tron.core.Wallet;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
-import org.tron.core.config.DatabaseOnlyConfig;
+import org.tron.core.config.DefaultConfig;
 import org.tron.core.config.args.Args;
 import org.tron.core.services.http.JsonFormat;
 import org.tron.core.services.http.Util;
@@ -219,7 +219,7 @@ public class BlockTransactionPrinter {
       DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
       beanFactory.setAllowCircularReferences(false);
       TronApplicationContext context = new TronApplicationContext(beanFactory);
-      context.register(DatabaseOnlyConfig.class);
+      context.register(DefaultConfig.class);
       context.refresh();
       System.out.println("Database-only context initialized successfully");
 
