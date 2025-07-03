@@ -164,7 +164,20 @@ public class BlockTransactionPrinter {
       CommonParameter.getInstance().setMetricsStorageEnable(false);
       CommonParameter.getInstance().setMetricsPrometheusEnable(false);
 
+      // Enable read-only mode for database operations
+      System.out.println("=== Enabling Database Read-Only Mode ===");
+      System.setProperty("database.readonly", "true");
+      System.setProperty("storage.readonly", "true");
+
       Args.setParam(configArgs, Constant.TESTNET_CONF);
+
+      // Configure storage for read-only mode
+      if (Args.getInstance().getStorage() != null) {
+        Args.getInstance().getStorage().setDbSync(false);
+        Args.getInstance().getStorage().setMaxFlushCount(0); // Disable flushing to prevent writes
+        System.out.println("Database sync disabled for read-only mode");
+        System.out.println("Database flush count set to 0 for read-only mode");
+      }
 
       // Print detailed database initialization information
       System.out.println("=== Database Initialization Information ===");
@@ -297,6 +310,7 @@ public class BlockTransactionPrinter {
         System.out.println("3. The configuration is pointing to the wrong database directory");
         System.out.println("Please check your configuration and ensure the database contains blockchain data.");
         context.close();
+        System.out.println("=== Read-Only Database Query Failed - Exiting Program ===");
         return;
       }
 
@@ -333,6 +347,7 @@ public class BlockTransactionPrinter {
 
         // Shutdown and exit for transaction mode
         context.close();
+        System.out.println("=== Read-Only Database Query Completed - Exiting Program ===");
         return;
       }
 
@@ -341,6 +356,7 @@ public class BlockTransactionPrinter {
         System.out.println("Error: Requested block range (" + startBlockNum + " to " + endBlockNum + 
                           ") is outside the available range (" + lowestBlockNum + " to " + latestBlockNum + ")");
         context.close();
+        System.out.println("=== Read-Only Database Query Failed - Exiting Program ===");
         return;
       }
 
@@ -422,6 +438,7 @@ public class BlockTransactionPrinter {
       // Shutdown the context
       context.close();
       System.out.println("\nTransaction printing completed successfully.");
+      System.out.println("=== Read-Only Database Query Completed - Exiting Program ===");
 
     } catch (NumberFormatException e) {
       System.out.println("Error: Block numbers must be valid integers");
