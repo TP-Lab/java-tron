@@ -138,6 +138,19 @@ public class BlockTransactionPrinter {
       ChainBaseManager chainBaseManager = context.getBean(ChainBaseManager.class);
       Wallet wallet = context.getBean(Wallet.class);
 
+      // Print database block range
+      long lowestBlockNum = chainBaseManager.getLowestBlockNum();
+      long latestBlockNum = chainBaseManager.getDynamicPropertiesStore().getLatestBlockHeaderNumber();
+      System.out.println("=== Database block range: " + lowestBlockNum + " to " + latestBlockNum + " ===");
+
+      // Validate user input against database range
+      if (startBlockNum < lowestBlockNum || endBlockNum > latestBlockNum) {
+        System.out.println("Error: Requested block range (" + startBlockNum + " to " + endBlockNum + 
+                          ") is outside the available range (" + lowestBlockNum + " to " + latestBlockNum + ")");
+        appT.shutdown();
+        return;
+      }
+
       System.out.println("=== Printing transactions from block " + startBlockNum + " to " + endBlockNum + " ===");
 
       // Initialize counters for summary
@@ -189,8 +202,15 @@ public class BlockTransactionPrinter {
               TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
 
               if (transactionInfo != null) {
+                // Convert log addresses to TRON addresses
+                List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
+                TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
+                    .clearLog()
+                    .addAllLog(newLogList)
+                    .build();
+
                 // Print transaction info in the same format as wallet/gettransactioninfobyid
-                System.out.println(JsonFormat.printToString(transactionInfo, true));
+                System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
               } else {
                 System.out.println("    No transaction info found for ID: " + txId);
               }
