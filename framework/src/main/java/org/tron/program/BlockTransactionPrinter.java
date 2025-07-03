@@ -18,7 +18,7 @@ import org.tron.core.Constant;
 import org.tron.core.Wallet;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
-import org.tron.core.config.DefaultConfig;
+import org.tron.core.config.DatabaseOnlyConfig;
 import org.tron.core.config.args.Args;
 import org.tron.core.services.http.JsonFormat;
 import org.tron.core.services.http.Util;
@@ -148,6 +148,22 @@ public class BlockTransactionPrinter {
       // Disable asset update to avoid "Asset num is wrong!" error and database clearing
       CommonParameter.getInstance().setNeedToUpdateAsset(false);
 
+      // Disable unnecessary services for database-only operation
+      CommonParameter.getInstance().setP2pDisable(true);
+      CommonParameter.getInstance().setRpcEnable(false);
+      CommonParameter.getInstance().setRpcSolidityEnable(false);
+      CommonParameter.getInstance().setRpcPBFTEnable(false);
+      CommonParameter.getInstance().setFullNodeHttpEnable(false);
+      CommonParameter.getInstance().setSolidityNodeHttpEnable(false);
+      CommonParameter.getInstance().setPBFTHttpEnable(false);
+      CommonParameter.getInstance().setJsonRpcHttpFullNodeEnable(false);
+      CommonParameter.getInstance().setJsonRpcHttpSolidityNodeEnable(false);
+      CommonParameter.getInstance().setJsonRpcHttpPBFTNodeEnable(false);
+      CommonParameter.getInstance().setEventSubscribe(false);
+      CommonParameter.getInstance().setNodeMetricsEnable(false);
+      CommonParameter.getInstance().setMetricsStorageEnable(false);
+      CommonParameter.getInstance().setMetricsPrometheusEnable(false);
+
       Args.setParam(configArgs, Constant.TESTNET_CONF);
 
       // Print detailed database initialization information
@@ -186,13 +202,17 @@ public class BlockTransactionPrinter {
       }
       System.out.println("=== End Database Initialization Information ===");
 
+      System.out.println("=== Initializing Database-Only Configuration ===");
       DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
       beanFactory.setAllowCircularReferences(false);
       TronApplicationContext context = new TronApplicationContext(beanFactory);
-      context.register(DefaultConfig.class);
+      context.register(DatabaseOnlyConfig.class);
       context.refresh();
-      Application appT = ApplicationFactory.create(context);
-      appT.startup();
+      System.out.println("Database-only context initialized successfully");
+
+      // Skip full application startup for database-only operation
+      // Application appT = ApplicationFactory.create(context);
+      // appT.startup();
 
       // Print additional database status after initialization
       System.out.println("=== Post-Initialization Database Status ===");
@@ -276,7 +296,7 @@ public class BlockTransactionPrinter {
         System.out.println("2. The node hasn't synchronized any blocks yet");
         System.out.println("3. The configuration is pointing to the wrong database directory");
         System.out.println("Please check your configuration and ensure the database contains blockchain data.");
-        appT.shutdown();
+        context.close();
         return;
       }
 
@@ -312,7 +332,7 @@ public class BlockTransactionPrinter {
         }
 
         // Shutdown and exit for transaction mode
-        appT.shutdown();
+        context.close();
         return;
       }
 
@@ -320,7 +340,7 @@ public class BlockTransactionPrinter {
       if (startBlockNum < lowestBlockNum || endBlockNum > latestBlockNum) {
         System.out.println("Error: Requested block range (" + startBlockNum + " to " + endBlockNum + 
                           ") is outside the available range (" + lowestBlockNum + " to " + latestBlockNum + ")");
-        appT.shutdown();
+        context.close();
         return;
       }
 
@@ -399,8 +419,8 @@ public class BlockTransactionPrinter {
       System.out.println("Average transactions per block: " + 
                         (totalBlocks > 0 ? String.format("%.2f", (double)totalTransactions / totalBlocks) : "0"));
 
-      // Shutdown the application
-      appT.shutdown();
+      // Shutdown the context
+      context.close();
       System.out.println("\nTransaction printing completed successfully.");
 
     } catch (NumberFormatException e) {
