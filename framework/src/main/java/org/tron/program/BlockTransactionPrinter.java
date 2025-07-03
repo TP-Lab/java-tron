@@ -321,6 +321,7 @@ public class BlockTransactionPrinter {
         try {
           ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(transactionId));
           TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
+          Transaction transaction = wallet.getTransactionById(txIdBytes);
 
           if (transactionInfo != null) {
             // Convert log addresses to TRON addresses
@@ -331,9 +332,21 @@ public class BlockTransactionPrinter {
                 .build();
 
             // Print transaction info in the same format as wallet/gettransactioninfobyid
-            System.out.println("Transaction found:");
+            System.out.println("=== Transaction Info (wallet/gettransactioninfobyid) ===");
             System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
           } else {
+            System.out.println("No transaction info found for ID: " + transactionId);
+          }
+
+          if (transaction != null) {
+            // Print transaction details in the same format as walletsolidity/gettransactionbyid
+            System.out.println("=== Transaction Details (walletsolidity/gettransactionbyid) ===");
+            System.out.println(JsonFormat.printToString(transaction, true));
+          } else {
+            System.out.println("No transaction details found for ID: " + transactionId);
+          }
+
+          if (transactionInfo == null && transaction == null) {
             System.out.println("Transaction not found: " + transactionId);
             System.out.println("This could happen if:");
             System.out.println("1. The transaction ID is incorrect");
@@ -410,6 +423,9 @@ public class BlockTransactionPrinter {
               // Get transaction info using wallet.getTransactionInfoById
               TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
 
+              // Get transaction using wallet.getTransactionById (walletsolidity/gettransactionbyid equivalent)
+              Transaction transaction = wallet.getTransactionById(txIdBytes);
+
               if (transactionInfo != null) {
                 // Convert log addresses to TRON addresses
                 List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
@@ -419,9 +435,18 @@ public class BlockTransactionPrinter {
                     .build();
 
                 // Print transaction info in the same format as wallet/gettransactioninfobyid
+                System.out.println("    === Transaction Info (wallet/gettransactioninfobyid) ===");
                 System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
               } else {
                 System.out.println("    No transaction info found for ID: " + txId);
+              }
+
+              if (transaction != null) {
+                // Print transaction details in the same format as walletsolidity/gettransactionbyid
+                System.out.println("    === Transaction Details (walletsolidity/gettransactionbyid) ===");
+                System.out.println(JsonFormat.printToString(transaction, true));
+              } else {
+                System.out.println("    No transaction details found for ID: " + txId);
               }
             }
           }
