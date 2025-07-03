@@ -2,6 +2,7 @@ package org.tron.program;
 
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
+import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import lombok.extern.slf4j.Slf4j;
@@ -123,6 +124,42 @@ public class BlockTransactionPrinter {
       }
       Args.setParam(configArgs, Constant.TESTNET_CONF);
 
+      // Print detailed database initialization information
+      System.out.println("=== Database Initialization Information ===");
+      String databasePath = Args.getInstance().getOutputDirectory();
+      System.out.println("Database directory path: " + databasePath);
+
+      File dbDir = new File(databasePath);
+      System.out.println("Database directory exists: " + dbDir.exists());
+      System.out.println("Database directory is directory: " + dbDir.isDirectory());
+      System.out.println("Database directory absolute path: " + dbDir.getAbsolutePath());
+
+      if (dbDir.exists()) {
+        System.out.println("Database directory is readable: " + dbDir.canRead());
+        System.out.println("Database directory is writable: " + dbDir.canWrite());
+
+        File[] files = dbDir.listFiles();
+        if (files != null) {
+          System.out.println("Contents of database directory (" + files.length + " items):");
+          for (File file : files) {
+            String type = file.isDirectory() ? "[DIR]" : "[FILE]";
+            long size = file.isFile() ? file.length() : 0;
+            System.out.println("  " + type + " " + file.getName() + 
+                             (file.isFile() ? " (" + size + " bytes)" : ""));
+          }
+        } else {
+          System.out.println("Could not list contents of database directory (permission denied?)");
+        }
+      } else {
+        System.out.println("Database directory does not exist!");
+        File parentDir = dbDir.getParentFile();
+        if (parentDir != null) {
+          System.out.println("Parent directory: " + parentDir.getAbsolutePath());
+          System.out.println("Parent directory exists: " + parentDir.exists());
+        }
+      }
+      System.out.println("=== End Database Initialization Information ===");
+
       // Disable asset update to avoid "Asset num is wrong!" error
       CommonParameter.getInstance().setNeedToUpdateAsset(false);
 
@@ -134,9 +171,33 @@ public class BlockTransactionPrinter {
       Application appT = ApplicationFactory.create(context);
       appT.startup();
 
+      // Print additional database status after initialization
+      System.out.println("=== Post-Initialization Database Status ===");
+      System.out.println("Application startup completed successfully");
+
       // Get ChainBaseManager and Wallet instances
       ChainBaseManager chainBaseManager = context.getBean(ChainBaseManager.class);
       Wallet wallet = context.getBean(Wallet.class);
+
+      System.out.println("ChainBaseManager initialized: " + (chainBaseManager != null));
+      System.out.println("Wallet initialized: " + (wallet != null));
+
+      // Check if database stores are accessible
+      try {
+        boolean blockStoreEmpty = chainBaseManager.getBlockStore().isNotEmpty();
+        System.out.println("BlockStore is not empty: " + blockStoreEmpty);
+      } catch (Exception e) {
+        System.out.println("Error checking BlockStore: " + e.getMessage());
+      }
+
+      try {
+        boolean dynamicPropsStoreAccessible = chainBaseManager.getDynamicPropertiesStore() != null;
+        System.out.println("DynamicPropertiesStore accessible: " + dynamicPropsStoreAccessible);
+      } catch (Exception e) {
+        System.out.println("Error accessing DynamicPropertiesStore: " + e.getMessage());
+      }
+
+      System.out.println("=== End Post-Initialization Database Status ===");
 
       // Get database block range using multiple approaches for robustness
       long lowestBlockNum = 0;
