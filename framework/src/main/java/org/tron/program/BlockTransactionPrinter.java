@@ -138,10 +138,63 @@ public class BlockTransactionPrinter {
       ChainBaseManager chainBaseManager = context.getBean(ChainBaseManager.class);
       Wallet wallet = context.getBean(Wallet.class);
 
-      // Print database block range
-      long lowestBlockNum = chainBaseManager.getLowestBlockNum();
-      long latestBlockNum = chainBaseManager.getDynamicPropertiesStore().getLatestBlockHeaderNumber();
+      // Get database block range using multiple approaches for robustness
+      long lowestBlockNum = 0;
+      long latestBlockNum = 0;
+
+      // Try to get the lowest block number
+      try {
+        lowestBlockNum = chainBaseManager.getLowestBlockNum();
+        if (lowestBlockNum < 0) {
+          // If getLowestBlockNum returns -1 or negative, try alternative approach
+          List<BlockCapsule> firstBlocks = chainBaseManager.getBlockStore().getLimitNumber(0, 1);
+          if (!firstBlocks.isEmpty()) {
+            lowestBlockNum = firstBlocks.get(0).getNum();
+          } else {
+            lowestBlockNum = 0;
+          }
+        }
+      } catch (Exception e) {
+        System.out.println("Warning: Could not get lowest block number, using 0. Error: " + e.getMessage());
+        lowestBlockNum = 0;
+      }
+
+      // Try to get the latest block number
+      try {
+        latestBlockNum = chainBaseManager.getDynamicPropertiesStore().getLatestBlockHeaderNumber();
+      } catch (Exception e) {
+        System.out.println("Warning: Could not get latest block number from DynamicPropertiesStore, trying alternative approach. Error: " + e.getMessage());
+        try {
+          // Try alternative approach using getLatestBlockHeaderNumberFromDB
+          latestBlockNum = chainBaseManager.getDynamicPropertiesStore().getLatestBlockHeaderNumberFromDB();
+          if (latestBlockNum < 0) {
+            // If that also fails, try getting the latest blocks from BlockStore
+            List<BlockCapsule> latestBlocks = chainBaseManager.getBlockStore().getBlockByLatestNum(1);
+            if (!latestBlocks.isEmpty()) {
+              latestBlockNum = latestBlocks.get(0).getNum();
+            } else {
+              latestBlockNum = 0;
+            }
+          }
+        } catch (Exception e2) {
+          System.out.println("Warning: Could not get latest block number from any source, using 0. Error: " + e2.getMessage());
+          latestBlockNum = 0;
+        }
+      }
+
       System.out.println("=== Database block range: " + lowestBlockNum + " to " + latestBlockNum + " ===");
+
+      // Check if we have a valid block range
+      if (latestBlockNum == 0 && lowestBlockNum == 0) {
+        System.out.println("Warning: Database appears to be empty or not properly initialized.");
+        System.out.println("This could happen if:");
+        System.out.println("1. The database directory is empty or doesn't exist");
+        System.out.println("2. The node hasn't synchronized any blocks yet");
+        System.out.println("3. The configuration is pointing to the wrong database directory");
+        System.out.println("Please check your configuration and ensure the database contains blockchain data.");
+        appT.shutdown();
+        return;
+      }
 
       // Validate user input against database range
       if (startBlockNum < lowestBlockNum || endBlockNum > latestBlockNum) {
