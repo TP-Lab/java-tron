@@ -144,6 +144,10 @@ public class BlockTransactionPrinter {
       } else {
         configArgs = new String[0];
       }
+
+      // Disable asset update to avoid "Asset num is wrong!" error and database clearing
+      CommonParameter.getInstance().setNeedToUpdateAsset(false);
+
       Args.setParam(configArgs, Constant.TESTNET_CONF);
 
       // Print detailed database initialization information
@@ -181,9 +185,6 @@ public class BlockTransactionPrinter {
         }
       }
       System.out.println("=== End Database Initialization Information ===");
-
-      // Disable asset update to avoid "Asset num is wrong!" error
-      CommonParameter.getInstance().setNeedToUpdateAsset(false);
 
       DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
       beanFactory.setAllowCircularReferences(false);
