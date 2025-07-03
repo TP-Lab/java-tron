@@ -97,28 +97,50 @@ public class BlockTransactionPrinter {
    */
   public static void main(String[] args) {
     if (args.length < 2) {
-      System.out.println("Usage: BlockTransactionPrinter <startBlockNum> <endBlockNum> [options]");
+      System.out.println("Usage:");
+      System.out.println("  BlockTransactionPrinter <startBlockNum> <endBlockNum> [options]");
+      System.out.println("  BlockTransactionPrinter -tx <transactionId> [options]");
       System.out.println("Options:");
       System.out.println("  -c <config_file>: Specify a custom configuration file");
       System.out.println("  -d <data_dir>: Specify a custom data directory");
       return;
     }
 
-    try {
-      long startBlockNum = Long.parseLong(args[0]);
-      long endBlockNum = Long.parseLong(args[1]);
+    // Check if this is transaction ID mode
+    boolean isTransactionMode = "-tx".equals(args[0]);
+    String transactionId = null;
+    long startBlockNum = 0;
+    long endBlockNum = 0;
 
-      if (startBlockNum < 0 || endBlockNum < 0 || startBlockNum > endBlockNum) {
-        System.out.println("Invalid block range. Start block must be <= end block and both must be >= 0");
-        return;
+    try {
+      if (isTransactionMode) {
+        if (args.length < 2) {
+          System.out.println("Error: Transaction ID is required when using -tx option");
+          return;
+        }
+        transactionId = args[1];
+        // Validate transaction ID format (should be 64 character hex string)
+        if (transactionId.length() != 64 || !transactionId.matches("[0-9a-fA-F]+")) {
+          System.out.println("Error: Invalid transaction ID format. Expected 64-character hex string.");
+          return;
+        }
+      } else {
+        startBlockNum = Long.parseLong(args[0]);
+        endBlockNum = Long.parseLong(args[1]);
+
+        if (startBlockNum < 0 || endBlockNum < 0 || startBlockNum > endBlockNum) {
+          System.out.println("Invalid block range. Start block must be <= end block and both must be >= 0");
+          return;
+        }
       }
 
       // Initialize TRON environment
-      // Create a new array without the block numbers for Args.setParam
+      // Create a new array without the block numbers/transaction ID for Args.setParam
       String[] configArgs;
-      if (args.length > 2) {
-        configArgs = new String[args.length - 2];
-        System.arraycopy(args, 2, configArgs, 0, args.length - 2);
+      int configStartIndex = isTransactionMode ? 2 : 2; // Both modes skip first 2 args
+      if (args.length > configStartIndex) {
+        configArgs = new String[args.length - configStartIndex];
+        System.arraycopy(args, configStartIndex, configArgs, 0, args.length - configStartIndex);
       } else {
         configArgs = new String[0];
       }
@@ -257,7 +279,43 @@ public class BlockTransactionPrinter {
         return;
       }
 
-      // Validate user input against database range
+      // Handle transaction mode
+      if (isTransactionMode) {
+        System.out.println("=== Querying transaction: " + transactionId + " ===");
+
+        try {
+          ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(transactionId));
+          TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
+
+          if (transactionInfo != null) {
+            // Convert log addresses to TRON addresses
+            List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
+            TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
+                .clearLog()
+                .addAllLog(newLogList)
+                .build();
+
+            // Print transaction info in the same format as wallet/gettransactioninfobyid
+            System.out.println("Transaction found:");
+            System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
+          } else {
+            System.out.println("Transaction not found: " + transactionId);
+            System.out.println("This could happen if:");
+            System.out.println("1. The transaction ID is incorrect");
+            System.out.println("2. The transaction is not in this database");
+            System.out.println("3. The transaction is too old and has been pruned");
+          }
+        } catch (Exception e) {
+          System.out.println("Error querying transaction: " + e.getMessage());
+          e.printStackTrace();
+        }
+
+        // Shutdown and exit for transaction mode
+        appT.shutdown();
+        return;
+      }
+
+      // Validate user input against database range (block range mode)
       if (startBlockNum < lowestBlockNum || endBlockNum > latestBlockNum) {
         System.out.println("Error: Requested block range (" + startBlockNum + " to " + endBlockNum + 
                           ") is outside the available range (" + lowestBlockNum + " to " + latestBlockNum + ")");
