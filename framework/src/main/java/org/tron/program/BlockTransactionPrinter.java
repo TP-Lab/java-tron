@@ -13,6 +13,7 @@ import org.tron.common.application.TronApplicationContext;
 import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
 import org.tron.common.utils.StringUtil;
+import org.tron.common.parameter.CommonParameter;
 import org.tron.core.ChainBaseManager;
 import org.tron.core.Constant;
 import org.tron.core.Wallet;
@@ -27,6 +28,7 @@ import org.tron.protos.Protocol.Transaction.Contract.ContractType;
 import org.tron.protos.Protocol.Transaction.Result;
 import org.tron.protos.Protocol.TransactionInfo;
 import org.tron.protos.Protocol.TransactionInfo.Log;
+import org.tron.protos.Protocol.InternalTransaction;
 import org.tron.protos.contract.BalanceContract.TransferContract;
 
 import java.util.List;
@@ -223,6 +225,18 @@ public class BlockTransactionPrinter {
       context.refresh();
       System.out.println("Database-only context initialized successfully");
 
+      // Check internal transaction configuration
+      boolean saveInternalTx = CommonParameter.getInstance().isSaveInternalTx();
+      boolean saveFeaturedInternalTx = CommonParameter.getInstance().isSaveFeaturedInternalTx();
+      System.out.println("=== Internal Transaction Configuration ===");
+      System.out.println("Save Internal Transactions: " + saveInternalTx);
+      System.out.println("Save Featured Internal Transactions: " + saveFeaturedInternalTx);
+      if (!saveInternalTx) {
+        System.out.println("WARNING: Internal transactions are not being saved!");
+        System.out.println("To enable internal transaction saving, set 'vm.saveInternalTx = true' in config.conf");
+        System.out.println("Internal transactions will not appear in TransactionInfo output.");
+      }
+
       // Skip full application startup for database-only operation
       // Application appT = ApplicationFactory.create(context);
       // appT.startup();
@@ -324,11 +338,12 @@ public class BlockTransactionPrinter {
           Transaction transaction = wallet.getTransactionById(txIdBytes);
 
           if (transactionInfo != null) {
-            // Convert log addresses to TRON addresses
+            // Convert log addresses to TRON addresses while preserving internal transactions
             List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
             TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
                 .clearLog()
                 .addAllLog(newLogList)
+                // Keep all other fields including internal_transactions
                 .build();
 
             // Print transaction info in the same format as wallet/gettransactioninfobyid
@@ -427,11 +442,12 @@ public class BlockTransactionPrinter {
               Transaction transaction = wallet.getTransactionById(txIdBytes);
 
               if (transactionInfo != null) {
-                // Convert log addresses to TRON addresses
+                // Convert log addresses to TRON addresses while preserving internal transactions
                 List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
                 TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
                     .clearLog()
                     .addAllLog(newLogList)
+                    // Keep all other fields including internal_transactions
                     .build();
 
                 // Print transaction info in the same format as wallet/gettransactioninfobyid
