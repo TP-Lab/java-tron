@@ -153,6 +153,14 @@ public class BlockTransactionPrinter {
 
     System.out.println("=== " + title + " ===");
 
+    if ("trigger".equals(outputFormat)) {
+      System.out.println("Warning: TransactionLogTrigger format requires both TransactionInfo and Transaction data.");
+      System.out.println("Use printTransactionLogTrigger() method instead for complete trigger format support.");
+      System.out.println("Falling back to JSON format:");
+      System.out.println(JsonFormat.printToString(transaction, true));
+      return;
+    }
+
     if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
       System.out.println("--- JSON Format ---");
       System.out.println(JsonFormat.printToString(transaction, true));
@@ -643,9 +651,35 @@ public class BlockTransactionPrinter {
           TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
           Transaction transaction = wallet.getTransactionById(txIdBytes);
 
-          printTransactionInfo(transactionInfo, outputFormat, "Transaction Info (wallet/gettransactioninfobyid)");
+          if ("trigger".equals(outputFormat)) {
+            // For trigger format, we need block information
+            String blockHash = "N/A";
+            long blockNumber = 0;
+            long timestamp = 0;
+            int transactionIndex = 0;
 
-          printTransaction(transaction, outputFormat, "Transaction Details (walletsolidity/gettransactionbyid)");
+            if (transactionInfo != null) {
+              blockNumber = transactionInfo.getBlockNumber();
+              timestamp = transactionInfo.getBlockTimeStamp();
+
+              // Try to get block hash from block number
+              try {
+                BlockCapsule blockCapsule = chainBaseManager.getBlockByNum(blockNumber);
+                if (blockCapsule != null) {
+                  blockHash = blockCapsule.getBlockId().toString();
+                }
+              } catch (Exception e) {
+                System.out.println("Warning: Could not retrieve block hash for block " + blockNumber);
+              }
+            }
+
+            printTransactionLogTrigger(transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex,
+                "Transaction (TransactionLogTrigger Format)");
+          } else {
+            // Use traditional formats
+            printTransactionInfo(transactionInfo, outputFormat, "Transaction Info (wallet/gettransactioninfobyid)");
+            printTransaction(transaction, outputFormat, "Transaction Details (walletsolidity/gettransactionbyid)");
+          }
 
           if (transactionInfo == null && transaction == null) {
             System.out.println("Transaction not found: " + transactionId);
