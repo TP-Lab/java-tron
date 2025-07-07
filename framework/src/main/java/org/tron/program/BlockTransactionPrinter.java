@@ -30,8 +30,21 @@ import org.tron.protos.Protocol.TransactionInfo;
 import org.tron.protos.Protocol.TransactionInfo.Log;
 import org.tron.protos.Protocol.InternalTransaction;
 import org.tron.protos.contract.BalanceContract.TransferContract;
+import org.tron.protos.contract.AssetIssueContractOuterClass;
+import org.tron.protos.contract.SmartContractOuterClass;
+
+// TransactionLogTrigger related imports
+import org.tron.common.logsfilter.trigger.TransactionLogTrigger;
+import org.tron.common.logsfilter.trigger.InternalTransactionPojo;
+import org.tron.common.logsfilter.trigger.LogPojo;
+import org.tron.common.utils.JsonUtil;
+import org.bouncycastle.util.encoders.Hex;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * A test program to print transactions from a specified block range.
@@ -49,10 +62,17 @@ import java.util.List;
  * Examples:
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 73592989 73592991 -c main_net_config.conf -d /tron/light/
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f trigger
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f json
  * 
  * Options:
  *    -c <config_file>: Specify a custom configuration file
  *    -d <data_dir>: Specify a custom data directory
+ *    -f <format>: Output format, default: both
+ *        json     - Standard JSON format using JsonFormat
+ *        protobuf - Protobuf toString format
+ *        both     - Both JSON and protobuf formats
+ *        trigger  - TransactionLogTrigger format (structured JSON with comprehensive transaction data)
  *    (Other standard TRON node options are also supported)
  * 
  * The program will:
@@ -97,6 +117,31 @@ public class BlockTransactionPrinter {
   }
 
   /**
+   * Print transaction in TransactionLogTrigger format
+   */
+  private static void printTransactionLogTrigger(TransactionInfo transactionInfo, Transaction transaction,
+      String blockHash, long blockNumber, long timestamp, int transactionIndex, String title) {
+
+    System.out.println("=== " + title + " ===");
+
+    try {
+      TransactionLogTrigger trigger = createTransactionLogTrigger(
+          transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex);
+
+      System.out.println("--- TransactionLogTrigger Format ---");
+      String jsonOutput = JsonUtil.obj2Json(trigger);
+      if (jsonOutput != null) {
+        System.out.println(jsonOutput);
+      } else {
+        System.out.println("Failed to serialize TransactionLogTrigger to JSON");
+      }
+    } catch (Exception e) {
+      System.out.println("Error creating TransactionLogTrigger: " + e.getMessage());
+      e.printStackTrace();
+    }
+  }
+
+  /**
    * Print transaction in the specified format
    */
   private static void printTransaction(Transaction transaction, String outputFormat, String title) {
@@ -115,6 +160,176 @@ public class BlockTransactionPrinter {
     if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
       System.out.println("--- Protobuf Format ---");
       System.out.println(transaction.toString());
+    }
+  }
+
+  /**
+   * Create TransactionLogTrigger from TransactionInfo and Transaction data
+   */
+  private static TransactionLogTrigger createTransactionLogTrigger(
+      TransactionInfo transactionInfo, Transaction transaction,
+      String blockHash, long blockNumber, long timestamp, int transactionIndex) {
+
+    TransactionLogTrigger trigger = new TransactionLogTrigger();
+
+    // Basic transaction information
+    if (transactionInfo != null) {
+      trigger.setTransactionId(Hex.toHexString(transactionInfo.getId().toByteArray()));
+    } else if (transaction != null) {
+      // Calculate transaction ID from transaction if transactionInfo is not available
+      // This is a simplified approach - in real scenarios you might need the actual transaction ID
+      trigger.setTransactionId("N/A");
+    }
+
+    trigger.setBlockHash(blockHash);
+    trigger.setBlockNumber(blockNumber);
+    trigger.setTimeStamp(timestamp);
+    trigger.setTransactionIndex(transactionIndex);
+
+    // Transaction data
+    if (transaction != null && transaction.getRawData() != null) {
+      trigger.setData(Hex.toHexString(transaction.getRawData().getData().toByteArray()));
+      trigger.setFeeLimit(transaction.getRawData().getFeeLimit());
+
+      // Contract information
+      if (transaction.getRawData().getContractCount() > 0) {
+        Transaction.Contract contract = transaction.getRawData().getContract(0);
+        trigger.setContractType(contract.getType().toString());
+        trigger.setContractCallValue(getCallValue(contract));
+        trigger.setContractData(contract.getParameter().toString());
+
+        // Extract transfer information for transfer contracts
+        extractTransferInfo(trigger, contract);
+      }
+    }
+
+    // Transaction execution results and fees
+    if (transactionInfo != null) {
+      // Result information
+      if (transactionInfo.getResult() != Transaction.Result.contractResult.SUCCESS) {
+        trigger.setResult(transactionInfo.getResult().toString());
+      } else {
+        trigger.setResult("SUCCESS");
+      }
+
+      // Fee and energy information
+      if (transactionInfo.hasReceipt()) {
+        Protocol.ResourceReceipt receipt = transactionInfo.getReceipt();
+        trigger.setEnergyUsage(receipt.getEnergyUsage());
+        trigger.setEnergyFee(receipt.getEnergyFee());
+        trigger.setOriginEnergyUsage(receipt.getOriginEnergyUsage());
+        trigger.setEnergyUsageTotal(receipt.getEnergyUsageTotal());
+        trigger.setNetUsage(receipt.getNetUsage());
+        trigger.setNetFee(receipt.getNetFee());
+      }
+
+      // Contract result
+      if (transactionInfo.getContractResultCount() > 0) {
+        trigger.setContractResult(Hex.toHexString(transactionInfo.getContractResult(0).toByteArray()));
+      }
+
+      // Internal transactions
+      if (transactionInfo.getInternalTransactionsCount() > 0) {
+        List<InternalTransactionPojo> internalTxList = new ArrayList<>();
+        for (InternalTransaction internalTx : transactionInfo.getInternalTransactionsList()) {
+          InternalTransactionPojo pojo = new InternalTransactionPojo();
+          pojo.setHash(Hex.toHexString(internalTx.getHash().toByteArray()));
+          pojo.setCallValue(internalTx.getCallValue());
+          pojo.setCaller_address(Hex.toHexString(internalTx.getCallerAddress().toByteArray()));
+          pojo.setTransferTo_address(Hex.toHexString(internalTx.getTransferToAddress().toByteArray()));
+          pojo.setData(Hex.toHexString(internalTx.getData().toByteArray()));
+          pojo.setRejected(internalTx.getRejected());
+          pojo.setNote(internalTx.getNote());
+          internalTxList.add(pojo);
+        }
+        trigger.setInternalTransactionList(internalTxList);
+      }
+
+      // Logs
+      if (transactionInfo.getLogCount() > 0) {
+        List<LogPojo> logList = new ArrayList<>();
+        for (int i = 0; i < transactionInfo.getLogCount(); i++) {
+          TransactionInfo.Log log = transactionInfo.getLog(i);
+          LogPojo logPojo = new LogPojo();
+
+          logPojo.setAddress(Hex.toHexString(log.getAddress().toByteArray()));
+          logPojo.setBlockHash(blockHash);
+          logPojo.setBlockNumber(blockNumber);
+          logPojo.setData(Hex.toHexString(log.getData().toByteArray()));
+          logPojo.setLogIndex(i);
+          logPojo.setTransactionHash(trigger.getTransactionId());
+          logPojo.setTransactionIndex(transactionIndex);
+
+          // Topics
+          List<String> topics = new ArrayList<>();
+          for (int j = 0; j < log.getTopicsCount(); j++) {
+            topics.add(Hex.toHexString(log.getTopics(j).toByteArray()));
+          }
+          logPojo.setTopicList(topics);
+
+          logList.add(logPojo);
+        }
+        trigger.setLogList(logList);
+      }
+    }
+
+    return trigger;
+  }
+
+  /**
+   * Extract call value from contract
+   */
+  private static long getCallValue(Transaction.Contract contract) {
+    try {
+      switch (contract.getType()) {
+        case TransferContract:
+          TransferContract transferContract = contract.getParameter().unpack(TransferContract.class);
+          return transferContract.getAmount();
+        case TriggerSmartContract:
+          org.tron.protos.contract.SmartContractOuterClass.TriggerSmartContract triggerContract =
+              contract.getParameter().unpack(org.tron.protos.contract.SmartContractOuterClass.TriggerSmartContract.class);
+          return triggerContract.getCallValue();
+        default:
+          return 0;
+      }
+    } catch (Exception e) {
+      return 0;
+    }
+  }
+
+  /**
+   * Extract transfer information from contract
+   */
+  private static void extractTransferInfo(TransactionLogTrigger trigger, Transaction.Contract contract) {
+    try {
+      switch (contract.getType()) {
+        case TransferContract:
+          TransferContract transferContract = contract.getParameter().unpack(TransferContract.class);
+          trigger.setFromAddress(Hex.toHexString(transferContract.getOwnerAddress().toByteArray()));
+          trigger.setToAddress(Hex.toHexString(transferContract.getToAddress().toByteArray()));
+          trigger.setAssetAmount(transferContract.getAmount());
+          trigger.setAssetName("TRX");
+          break;
+        case TransferAssetContract:
+          org.tron.protos.contract.AssetIssueContractOuterClass.TransferAssetContract transferAssetContract =
+              contract.getParameter().unpack(org.tron.protos.contract.AssetIssueContractOuterClass.TransferAssetContract.class);
+          trigger.setFromAddress(Hex.toHexString(transferAssetContract.getOwnerAddress().toByteArray()));
+          trigger.setToAddress(Hex.toHexString(transferAssetContract.getToAddress().toByteArray()));
+          trigger.setAssetAmount(transferAssetContract.getAmount());
+          trigger.setAssetName(transferAssetContract.getAssetName().toStringUtf8());
+          break;
+        case TriggerSmartContract:
+          org.tron.protos.contract.SmartContractOuterClass.TriggerSmartContract triggerContract =
+              contract.getParameter().unpack(org.tron.protos.contract.SmartContractOuterClass.TriggerSmartContract.class);
+          trigger.setFromAddress(Hex.toHexString(triggerContract.getOwnerAddress().toByteArray()));
+          trigger.setContractAddress(Hex.toHexString(triggerContract.getContractAddress().toByteArray()));
+          break;
+        default:
+          // For other contract types, try to extract owner address if available
+          break;
+      }
+    } catch (Exception e) {
+      // Ignore extraction errors
     }
   }
 
@@ -156,7 +371,7 @@ public class BlockTransactionPrinter {
       System.out.println("Options:");
       System.out.println("  -c <config_file>: Specify a custom configuration file");
       System.out.println("  -d <data_dir>: Specify a custom data directory");
-      System.out.println("  -f <format>: Output format (json|protobuf|both), default: json");
+      System.out.println("  -f <format>: Output format (json|protobuf|both|trigger), default: both");
       return;
     }
 
@@ -170,8 +385,9 @@ public class BlockTransactionPrinter {
     }
 
     // Validate output format
-    if (!outputFormat.equals("json") && !outputFormat.equals("protobuf") && !outputFormat.equals("both")) {
-      System.out.println("Error: Invalid output format. Use 'json', 'protobuf', or 'both'");
+    if (!outputFormat.equals("json") && !outputFormat.equals("protobuf") &&
+        !outputFormat.equals("both") && !outputFormat.equals("trigger")) {
+      System.out.println("Error: Invalid output format. Use 'json', 'protobuf', 'both', or 'trigger'");
       return;
     }
 
@@ -488,43 +704,51 @@ public class BlockTransactionPrinter {
               // Get transaction using wallet.getTransactionById (walletsolidity/gettransactionbyid equivalent)
               Transaction transaction = wallet.getTransactionById(txIdBytes);
 
-              if (transactionInfo != null) {
-                // Convert log addresses to TRON addresses while preserving internal transactions
-                List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
-                TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
-                    .clearLog()
-                    .addAllLog(newLogList)
-                    .build();
-
-                System.out.println("    === Transaction Info (wallet/gettransactioninfobyid) ===");
-
-                if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
-                  System.out.println("    --- JSON Format ---");
-                  System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
-                }
-
-                if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
-                  System.out.println("    --- Protobuf Format ---");
-                  System.out.println(transactionInfoWithConvertedLogs.toString());
-                }
+              // Handle different output formats
+              if ("trigger".equals(outputFormat)) {
+                // Use TransactionLogTrigger format
+                printTransactionLogTrigger(transactionInfo, transaction, blockId, blockNum, timestamp, i,
+                    "Transaction #" + (i + 1) + " (TransactionLogTrigger Format)");
               } else {
-                System.out.println("    No transaction info found for ID: " + txId);
-              }
+                // Use traditional formats
+                if (transactionInfo != null) {
+                  // Convert log addresses to TRON addresses while preserving internal transactions
+                  List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
+                  TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
+                      .clearLog()
+                      .addAllLog(newLogList)
+                      .build();
 
-              if (transaction != null) {
-                System.out.println("    === Transaction Details (walletsolidity/gettransactionbyid) ===");
+                  System.out.println("    === Transaction Info (wallet/gettransactioninfobyid) ===");
 
-                if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
-                  System.out.println("    --- JSON Format ---");
-                  System.out.println(JsonFormat.printToString(transaction, true));
+                  if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
+                    System.out.println("    --- JSON Format ---");
+                    System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
+                  }
+
+                  if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
+                    System.out.println("    --- Protobuf Format ---");
+                    System.out.println(transactionInfoWithConvertedLogs.toString());
+                  }
+                } else {
+                  System.out.println("    No transaction info found for ID: " + txId);
                 }
 
-                if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
-                  System.out.println("    --- Protobuf Format ---");
-                  System.out.println(transaction.toString());
+                if (transaction != null) {
+                  System.out.println("    === Transaction Details (walletsolidity/gettransactionbyid) ===");
+
+                  if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
+                    System.out.println("    --- JSON Format ---");
+                    System.out.println(JsonFormat.printToString(transaction, true));
+                  }
+
+                  if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
+                    System.out.println("    --- Protobuf Format ---");
+                    System.out.println(transaction.toString());
+                  }
+                } else {
+                  System.out.println("    No transaction details found for ID: " + txId);
                 }
-              } else {
-                System.out.println("    No transaction details found for ID: " + txId);
               }
             }
           }
