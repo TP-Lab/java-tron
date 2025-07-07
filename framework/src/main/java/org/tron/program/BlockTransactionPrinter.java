@@ -380,6 +380,7 @@ public class BlockTransactionPrinter {
     for (int i = 0; i < args.length - 1; i++) {
       if ("-f".equals(args[i])) {
         outputFormat = args[i + 1].toLowerCase();
+        System.out.println("Output format set to: " + outputFormat);
         break;
       }
     }
@@ -420,15 +421,22 @@ public class BlockTransactionPrinter {
       }
 
       // Initialize TRON environment
-      // Create a new array without the block numbers/transaction ID for Args.setParam
+      // Create a new array without the block numbers/transaction ID and -f parameter for Args.setParam
       String[] configArgs;
       int configStartIndex = isTransactionMode ? 2 : 2; // Both modes skip first 2 args
-      if (args.length > configStartIndex) {
-        configArgs = new String[args.length - configStartIndex];
-        System.arraycopy(args, configStartIndex, configArgs, 0, args.length - configStartIndex);
-      } else {
-        configArgs = new String[0];
+
+      // Filter out -f parameter and its value since it's not a TRON node parameter
+      List<String> filteredArgs = new ArrayList<>();
+      for (int i = configStartIndex; i < args.length; i++) {
+        if ("-f".equals(args[i])) {
+          // Skip -f and its value
+          i++; // Skip the next argument (format value)
+        } else {
+          filteredArgs.add(args[i]);
+        }
       }
+
+      configArgs = filteredArgs.toArray(new String[0]);
 
       // Disable asset update to avoid "Asset num is wrong!" error and database clearing
       CommonParameter.getInstance().setNeedToUpdateAsset(false);
