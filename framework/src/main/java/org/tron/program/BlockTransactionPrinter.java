@@ -39,6 +39,7 @@ import org.tron.common.logsfilter.trigger.TransactionLogTrigger;
 import org.tron.common.logsfilter.trigger.InternalTransactionPojo;
 import org.tron.common.logsfilter.trigger.LogPojo;
 import org.tron.common.utils.JsonUtil;
+import org.tron.common.utils.StringUtil;
 import org.bouncycastle.util.encoders.Hex;
 
 import java.util.List;
@@ -217,9 +218,14 @@ public class BlockTransactionPrinter {
       // Result information
       if (transactionInfo.getResult() != TransactionInfo.code.SUCESS) {
         trigger.setResult(transactionInfo.getResult().toString());
+        trigger.setTxResult(transactionInfo.getResult().toString());
       } else {
         trigger.setResult("SUCCESS");
+        trigger.setTxResult("SUCCESS");
       }
+
+      // Total fee
+      trigger.setFee(transactionInfo.getFee());
 
       // Fee and energy information
       if (transactionInfo.hasReceipt()) {
@@ -235,6 +241,11 @@ public class BlockTransactionPrinter {
       // Contract result
       if (transactionInfo.getContractResultCount() > 0) {
         trigger.setContractResult(Hex.toHexString(transactionInfo.getContractResult(0).toByteArray()));
+      }
+
+      // Contract address
+      if (transactionInfo.getContractAddress() != null && !transactionInfo.getContractAddress().isEmpty()) {
+        trigger.setContractAddress(StringUtil.encode58Check(transactionInfo.getContractAddress().toByteArray()));
       }
 
       // Internal transactions
@@ -253,8 +264,8 @@ public class BlockTransactionPrinter {
             }
           }
 
-          pojo.setCaller_address(Hex.toHexString(internalTx.getCallerAddress().toByteArray()));
-          pojo.setTransferTo_address(Hex.toHexString(internalTx.getTransferToAddress().toByteArray()));
+          pojo.setCaller_address(StringUtil.encode58Check(internalTx.getCallerAddress().toByteArray()));
+          pojo.setTransferTo_address(StringUtil.encode58Check(internalTx.getTransferToAddress().toByteArray()));
 
           // Handle extra data
           if (!internalTx.getExtra().isEmpty()) {
@@ -294,6 +305,54 @@ public class BlockTransactionPrinter {
         }
         trigger.setLogList(logList);
       }
+
+      // Additional fields that were missing
+      // Note: Some of these fields may not be directly available in TransactionInfo
+      // and might need to be calculated or retrieved from other sources
+
+      // Memo fee and multi-sign fee - these are available in ResourceReceipt but not exposed in protobuf
+      // Setting to 0 as they're not directly available in the public TransactionInfo API
+      trigger.setMemoFee(0);
+      trigger.setMultiSignFee(0);
+
+      // Energy unit price - this might need to be retrieved from chain parameters
+      // For now, setting to 0 as it's not directly available in TransactionInfo
+      trigger.setEnergyUnitPrice(0);
+
+      // Cumulative energy used - this would typically be calculated across multiple transactions
+      // For a single transaction, it's the same as energyUsageTotal
+      if (transactionInfo.hasReceipt()) {
+        trigger.setCumulativeEnergyUsed(transactionInfo.getReceipt().getEnergyUsageTotal());
+      }
+
+      // Pre-cumulative log count - this would be the log count before this transaction
+      // For now, setting to 0 as it requires context of previous transactions
+      trigger.setPreCumulativeLogCount(0);
+
+      // Latest solidified block number - this would need to be retrieved from the chain
+      // For now, using the current block number as a placeholder
+      trigger.setLatestSolidifiedBlockNumber(blockNumber);
+
+      // ExtMap - only set for specific contract types like CancelAllUnfreezeV2Contract
+      // Check if this is a CancelAllUnfreezeV2Contract and set extMap accordingly
+      if (transaction != null && transaction.getRawData() != null &&
+          transaction.getRawData().getContractCount() > 0) {
+        Transaction.Contract contract = transaction.getRawData().getContract(0);
+        if (contract.getType().toString().equals("CancelAllUnfreezeV2Contract")) {
+          // For CancelAllUnfreezeV2Contract, extMap should contain getCancelUnfreezeV2AmountMap()
+          // This is not directly available in our current context, so we'll initialize empty
+          Map<String, Long> extMap = new HashMap<>();
+          trigger.setExtMap(extMap);
+        } else {
+          // For other contract types, initialize empty extMap
+          Map<String, Long> extMap = new HashMap<>();
+          trigger.setExtMap(extMap);
+        }
+      } else {
+        // Initialize empty extMap for cases without contract
+        Map<String, Long> extMap = new HashMap<>();
+        trigger.setExtMap(extMap);
+      }
     }
 
     return trigger;
@@ -328,24 +387,24 @@ public class BlockTransactionPrinter {
       switch (contract.getType()) {
         case TransferContract:
           TransferContract transferContract = contract.getParameter().unpack(TransferContract.class);
-          trigger.setFromAddress(Hex.toHexString(transferContract.getOwnerAddress().toByteArray()));
-          trigger.setToAddress(Hex.toHexString(transferContract.getToAddress().toByteArray()));
+          trigger.setFromAddress(StringUtil.encode58Check(transferContract.getOwnerAddress().toByteArray()));
+          trigger.setToAddress(StringUtil.encode58Check(transferContract.getToAddress().toByteArray()));
           trigger.setAssetAmount(transferContract.getAmount());
-          trigger.setAssetName("TRX");
+          trigger.setAssetName("trx");
           break;
         case TransferAssetContract:
           org.tron.protos.contract.AssetIssueContractOuterClass.TransferAssetContract transferAssetContract =
               contract.getParameter().unpack(org.tron.protos.contract.AssetIssueContractOuterClass.TransferAssetContract.class);
-          trigger.setFromAddress(Hex.toHexString(transferAssetContract.getOwnerAddress().toByteArray()));
-          trigger.setToAddress(Hex.toHexString(transferAssetContract.getToAddress().toByteArray()));
+          trigger.setFromAddress(StringUtil.encode58Check(transferAssetContract.getOwnerAddress().toByteArray()));
+          trigger.setToAddress(StringUtil.encode58Check(transferAssetContract.getToAddress().toByteArray()));
           trigger.setAssetAmount(transferAssetContract.getAmount());
           trigger.setAssetName(transferAssetContract.getAssetName().toStringUtf8());
           break;
         case TriggerSmartContract:
           org.tron.protos.contract.SmartContractOuterClass.TriggerSmartContract triggerContract =
               contract.getParameter().unpack(org.tron.protos.contract.SmartContractOuterClass.TriggerSmartContract.class);
-          trigger.setFromAddress(Hex.toHexString(triggerContract.getOwnerAddress().toByteArray()));
-          trigger.setContractAddress(Hex.toHexString(triggerContract.getContractAddress().toByteArray()));
+          trigger.setFromAddress(StringUtil.encode58Check(triggerContract.getOwnerAddress().toByteArray()));
+          trigger.setToAddress(StringUtil.encode58Check(triggerContract.getContractAddress().toByteArray()));
           break;
         default:
           // For other contract types, try to extract owner address if available
