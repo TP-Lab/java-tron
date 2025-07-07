@@ -156,14 +156,14 @@ public class BlockTransactionPrinter {
       System.out.println("Options:");
       System.out.println("  -c <config_file>: Specify a custom configuration file");
       System.out.println("  -d <data_dir>: Specify a custom data directory");
-      System.out.println("  -tf <format>: Output format (json|protobuf|both), default: json");
+      System.out.println("  -f <format>: Output format (json|protobuf|both), default: json");
       return;
     }
 
     // Parse output format option
-    String outputFormat = "json"; // default
+    String outputFormat = "both"; // default
     for (int i = 0; i < args.length - 1; i++) {
-      if ("-tf".equals(args[i])) {
+      if ("-f".equals(args[i])) {
         outputFormat = args[i + 1].toLowerCase();
         break;
       }
