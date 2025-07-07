@@ -161,23 +161,6 @@ public class BlockTransactionPrinter {
     }
 
     // Parse output format option
-    final String outputFormat; // Make it final so it can be used in inner scopes
-    String tempFormat = "json"; // default
-    for (int i = 0; i < args.length - 1; i++) {
-      if ("-f".equals(args[i])) {
-        tempFormat = args[i + 1].toLowerCase();
-        break;
-      }
-    }
-    outputFormat = tempFormat;
-
-    // Validate output format
-    if (!outputFormat.equals("json") && !outputFormat.equals("protobuf") && !outputFormat.equals("both")) {
-      System.out.println("Error: Invalid output format. Use 'json', 'protobuf', or 'both'");
-      return;
-    }
-
-    // Parse output format option
     String outputFormat = "json"; // default
     for (int i = 0; i < args.length - 1; i++) {
       if ("--fmt".equals(args[i])) {
