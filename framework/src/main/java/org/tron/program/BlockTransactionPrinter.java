@@ -68,6 +68,57 @@ import java.util.List;
 public class BlockTransactionPrinter {
 
   /**
+   * Print transaction info in the specified format
+   */
+  private static void printTransactionInfo(TransactionInfo transactionInfo, String outputFormat, String title) {
+    if (transactionInfo == null) {
+      System.out.println("No transaction info available");
+      return;
+    }
+
+    // Convert log addresses to TRON addresses while preserving internal transactions
+    List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
+    TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
+        .clearLog()
+        .addAllLog(newLogList)
+        .build();
+
+    System.out.println("=== " + title + " ===");
+
+    if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
+      System.out.println("--- JSON Format ---");
+      System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
+    }
+
+    if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
+      System.out.println("--- Protobuf Format ---");
+      System.out.println(transactionInfoWithConvertedLogs.toString());
+    }
+  }
+
+  /**
+   * Print transaction in the specified format
+   */
+  private static void printTransaction(Transaction transaction, String outputFormat, String title) {
+    if (transaction == null) {
+      System.out.println("No transaction available");
+      return;
+    }
+
+    System.out.println("=== " + title + " ===");
+
+    if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
+      System.out.println("--- JSON Format ---");
+      System.out.println(JsonFormat.printToString(transaction, true));
+    }
+
+    if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
+      System.out.println("--- Protobuf Format ---");
+      System.out.println(transaction.toString());
+    }
+  }
+
+  /**
    * Main method to run the block transaction printer.
    * 
    * This method initializes the TRON environment, connects to the blockchain,
@@ -105,6 +156,24 @@ public class BlockTransactionPrinter {
       System.out.println("Options:");
       System.out.println("  -c <config_file>: Specify a custom configuration file");
       System.out.println("  -d <data_dir>: Specify a custom data directory");
+      System.out.println("  -f <format>: Output format (json|protobuf|both), default: json");
+      return;
+    }
+
+    // Parse output format option
+    final String outputFormat; // Make it final so it can be used in inner scopes
+    String tempFormat = "json"; // default
+    for (int i = 0; i < args.length - 1; i++) {
+      if ("-f".equals(args[i])) {
+        tempFormat = args[i + 1].toLowerCase();
+        break;
+      }
+    }
+    outputFormat = tempFormat;
+
+    // Validate output format
+    if (!outputFormat.equals("json") && !outputFormat.equals("protobuf") && !outputFormat.equals("both")) {
+      System.out.println("Error: Invalid output format. Use 'json', 'protobuf', or 'both'");
       return;
     }
 
@@ -337,29 +406,9 @@ public class BlockTransactionPrinter {
           TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
           Transaction transaction = wallet.getTransactionById(txIdBytes);
 
-          if (transactionInfo != null) {
-            // Convert log addresses to TRON addresses while preserving internal transactions
-            List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
-            TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
-                .clearLog()
-                .addAllLog(newLogList)
-                // Keep all other fields including internal_transactions
-                .build();
+          printTransactionInfo(transactionInfo, outputFormat, "Transaction Info (wallet/gettransactioninfobyid)");
 
-            // Print transaction info in the same format as wallet/gettransactioninfobyid
-            System.out.println("=== Transaction Info (wallet/gettransactioninfobyid) ===");
-            System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
-          } else {
-            System.out.println("No transaction info found for ID: " + transactionId);
-          }
-
-          if (transaction != null) {
-            // Print transaction details in the same format as walletsolidity/gettransactionbyid
-            System.out.println("=== Transaction Details (walletsolidity/gettransactionbyid) ===");
-            System.out.println(JsonFormat.printToString(transaction, true));
-          } else {
-            System.out.println("No transaction details found for ID: " + transactionId);
-          }
+          printTransaction(transaction, outputFormat, "Transaction Details (walletsolidity/gettransactionbyid)");
 
           if (transactionInfo == null && transaction == null) {
             System.out.println("Transaction not found: " + transactionId);
@@ -447,20 +496,35 @@ public class BlockTransactionPrinter {
                 TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
                     .clearLog()
                     .addAllLog(newLogList)
-                    // Keep all other fields including internal_transactions
                     .build();
 
-                // Print transaction info in the same format as wallet/gettransactioninfobyid
                 System.out.println("    === Transaction Info (wallet/gettransactioninfobyid) ===");
-                System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
+
+                if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
+                  System.out.println("    --- JSON Format ---");
+                  System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
+                }
+
+                if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
+                  System.out.println("    --- Protobuf Format ---");
+                  System.out.println(transactionInfoWithConvertedLogs.toString());
+                }
               } else {
                 System.out.println("    No transaction info found for ID: " + txId);
               }
 
               if (transaction != null) {
-                // Print transaction details in the same format as walletsolidity/gettransactionbyid
                 System.out.println("    === Transaction Details (walletsolidity/gettransactionbyid) ===");
-                System.out.println(JsonFormat.printToString(transaction, true));
+
+                if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
+                  System.out.println("    --- JSON Format ---");
+                  System.out.println(JsonFormat.printToString(transaction, true));
+                }
+
+                if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
+                  System.out.println("    --- Protobuf Format ---");
+                  System.out.println(transaction.toString());
+                }
               } else {
                 System.out.println("    No transaction details found for ID: " + txId);
               }
