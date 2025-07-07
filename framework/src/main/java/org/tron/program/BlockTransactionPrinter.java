@@ -156,7 +156,7 @@ public class BlockTransactionPrinter {
       System.out.println("Options:");
       System.out.println("  -c <config_file>: Specify a custom configuration file");
       System.out.println("  -d <data_dir>: Specify a custom data directory");
-      System.out.println("  -f <format>: Output format (json|protobuf|both), default: json");
+      System.out.println("  --fmt <format>: Output format (json|protobuf|both), default: json");
       return;
     }
 
@@ -170,6 +170,21 @@ public class BlockTransactionPrinter {
       }
     }
     outputFormat = tempFormat;
+
+    // Validate output format
+    if (!outputFormat.equals("json") && !outputFormat.equals("protobuf") && !outputFormat.equals("both")) {
+      System.out.println("Error: Invalid output format. Use 'json', 'protobuf', or 'both'");
+      return;
+    }
+
+    // Parse output format option
+    String outputFormat = "json"; // default
+    for (int i = 0; i < args.length - 1; i++) {
+      if ("--fmt".equals(args[i])) {
+        outputFormat = args[i + 1].toLowerCase();
+        break;
+      }
+    }
 
     // Validate output format
     if (!outputFormat.equals("json") && !outputFormat.equals("protobuf") && !outputFormat.equals("both")) {
