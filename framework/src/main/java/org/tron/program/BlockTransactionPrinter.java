@@ -206,7 +206,7 @@ public class BlockTransactionPrinter {
     // Transaction execution results and fees
     if (transactionInfo != null) {
       // Result information
-      if (transactionInfo.getResult() != Transaction.Result.contractResult.SUCCESS) {
+      if (transactionInfo.getResult() != Transaction.Result.SUCCESS) {
         trigger.setResult(transactionInfo.getResult().toString());
       } else {
         trigger.setResult("SUCCESS");
@@ -214,7 +214,7 @@ public class BlockTransactionPrinter {
 
       // Fee and energy information
       if (transactionInfo.hasReceipt()) {
-        Protocol.ResourceReceipt receipt = transactionInfo.getReceipt();
+        TransactionInfo.ResourceReceipt receipt = transactionInfo.getReceipt();
         trigger.setEnergyUsage(receipt.getEnergyUsage());
         trigger.setEnergyFee(receipt.getEnergyFee());
         trigger.setOriginEnergyUsage(receipt.getOriginEnergyUsage());
@@ -234,12 +234,26 @@ public class BlockTransactionPrinter {
         for (InternalTransaction internalTx : transactionInfo.getInternalTransactionsList()) {
           InternalTransactionPojo pojo = new InternalTransactionPojo();
           pojo.setHash(Hex.toHexString(internalTx.getHash().toByteArray()));
-          pojo.setCallValue(internalTx.getCallValue());
+
+          // Handle CallValueInfo
+          if (internalTx.getCallValueInfoCount() > 0) {
+            InternalTransaction.CallValueInfo callValueInfo = internalTx.getCallValueInfo(0);
+            pojo.setCallValue(callValueInfo.getCallValue());
+            if (!callValueInfo.getTokenId().isEmpty()) {
+              pojo.getTokenInfo().put(callValueInfo.getTokenId(), callValueInfo.getCallValue());
+            }
+          }
+
           pojo.setCaller_address(Hex.toHexString(internalTx.getCallerAddress().toByteArray()));
           pojo.setTransferTo_address(Hex.toHexString(internalTx.getTransferToAddress().toByteArray()));
-          pojo.setData(Hex.toHexString(internalTx.getData().toByteArray()));
+
+          // Handle extra data
+          if (!internalTx.getExtra().isEmpty()) {
+            pojo.setData(internalTx.getExtra());
+          }
+
           pojo.setRejected(internalTx.getRejected());
-          pojo.setNote(internalTx.getNote());
+          pojo.setNote(internalTx.getNote().toStringUtf8());
           internalTxList.add(pojo);
         }
         trigger.setInternalTransactionList(internalTxList);
