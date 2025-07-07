@@ -29,6 +29,7 @@ import org.tron.protos.Protocol.Transaction.Result;
 import org.tron.protos.Protocol.TransactionInfo;
 import org.tron.protos.Protocol.TransactionInfo.Log;
 import org.tron.protos.Protocol.InternalTransaction;
+import org.tron.protos.Protocol.ResourceReceipt;
 import org.tron.protos.contract.BalanceContract.TransferContract;
 import org.tron.protos.contract.AssetIssueContractOuterClass;
 import org.tron.protos.contract.SmartContractOuterClass;
@@ -206,7 +207,7 @@ public class BlockTransactionPrinter {
     // Transaction execution results and fees
     if (transactionInfo != null) {
       // Result information
-      if (transactionInfo.getResult() != Transaction.Result.SUCCESS) {
+      if (transactionInfo.getResult() != TransactionInfo.code.SUCESS) {
         trigger.setResult(transactionInfo.getResult().toString());
       } else {
         trigger.setResult("SUCCESS");
@@ -214,7 +215,7 @@ public class BlockTransactionPrinter {
 
       // Fee and energy information
       if (transactionInfo.hasReceipt()) {
-        TransactionInfo.ResourceReceipt receipt = transactionInfo.getReceipt();
+        ResourceReceipt receipt = transactionInfo.getReceipt();
         trigger.setEnergyUsage(receipt.getEnergyUsage());
         trigger.setEnergyFee(receipt.getEnergyFee());
         trigger.setOriginEnergyUsage(receipt.getOriginEnergyUsage());
