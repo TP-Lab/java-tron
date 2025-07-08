@@ -236,6 +236,10 @@ public class BlockTransactionPrinter {
         trigger.setEnergyUsageTotal(receipt.getEnergyUsageTotal());
         trigger.setNetUsage(receipt.getNetUsage());
         trigger.setNetFee(receipt.getNetFee());
+
+        // Energy penalty total - available in ResourceReceipt
+        // Note: This field might not be available in all TRON versions
+        // trigger.setEnergyPenaltyTotal(receipt.getEnergyPenaltyTotal());
       }
 
       // Contract result
@@ -333,25 +337,61 @@ public class BlockTransactionPrinter {
       // For now, using the current block number as a placeholder
       trigger.setLatestSolidifiedBlockNumber(blockNumber);
 
-      // ExtMap - only set for specific contract types like CancelAllUnfreezeV2Contract
-      // Check if this is a CancelAllUnfreezeV2Contract and set extMap accordingly
-      if (transaction != null && transaction.getRawData() != null &&
-          transaction.getRawData().getContractCount() > 0) {
-        Transaction.Contract contract = transaction.getRawData().getContract(0);
-        if (contract.getType().toString().equals("CancelAllUnfreezeV2Contract")) {
-          // For CancelAllUnfreezeV2Contract, extMap should contain getCancelUnfreezeV2AmountMap()
-          // This is not directly available in our current context, so we'll initialize empty
-          Map<String, Long> extMap = new HashMap<>();
-          trigger.setExtMap(extMap);
-        } else {
-          // For other contract types, initialize empty extMap
-          Map<String, Long> extMap = new HashMap<>();
-          trigger.setExtMap(extMap);
-        }
+      // ExtMap - use getCancelUnfreezeV2AmountMap() from TransactionInfo if available
+      if (transactionInfo.getCancelUnfreezeV2AmountCount() > 0) {
+        // TransactionInfo has getCancelUnfreezeV2AmountMap() which is exactly what extMap should contain
+        trigger.setExtMap(transactionInfo.getCancelUnfreezeV2AmountMap());
       } else {
-        // Initialize empty extMap for cases without contract
+        // Initialize empty extMap for cases without cancel unfreeze data
         Map<String, Long> extMap = new HashMap<>();
         trigger.setExtMap(extMap);
+      }
+
+      // Additional TransactionInfo fields that can be extracted
+      // These fields are available in TransactionInfo but not commonly used in TransactionLogTrigger
+      // However, they could be useful for specific contract types
+
+      // Asset-related fields
+      if (!transactionInfo.getAssetIssueID().isEmpty()) {
+        // This could be stored in extMap or used to set assetName for asset issue transactions
+        trigger.getExtMap().put("assetIssueID", Long.parseLong(transactionInfo.getAssetIssueID()));
+      }
+
+      // Withdraw and unfreeze amounts
+      if (transactionInfo.getWithdrawAmount() > 0) {
+        trigger.getExtMap().put("withdrawAmount", transactionInfo.getWithdrawAmount());
+      }
+
+      if (transactionInfo.getUnfreezeAmount() > 0) {
+        trigger.getExtMap().put("unfreezeAmount", transactionInfo.getUnfreezeAmount());
+      }
+
+      if (transactionInfo.getWithdrawExpireAmount() > 0) {
+        trigger.getExtMap().put("withdrawExpireAmount", transactionInfo.getWithdrawExpireAmount());
+      }
+
+      // Exchange-related fields
+      if (transactionInfo.getExchangeId() > 0) {
+        trigger.getExtMap().put("exchangeId", transactionInfo.getExchangeId());
+        if (transactionInfo.getExchangeReceivedAmount() > 0) {
+          trigger.getExtMap().put("exchangeReceivedAmount", transactionInfo.getExchangeReceivedAmount());
+        }
+        if (transactionInfo.getExchangeInjectAnotherAmount() > 0) {
+          trigger.getExtMap().put("exchangeInjectAnotherAmount", transactionInfo.getExchangeInjectAnotherAmount());
+        }
+        if (transactionInfo.getExchangeWithdrawAnotherAmount() > 0) {
+          trigger.getExtMap().put("exchangeWithdrawAnotherAmount", transactionInfo.getExchangeWithdrawAnotherAmount());
+        }
+      }
+
+      // Shielded transaction fee
+      if (transactionInfo.getShieldedTransactionFee() > 0) {
+        trigger.getExtMap().put("shieldedTransactionFee", transactionInfo.getShieldedTransactionFee());
+      }
+
+      // Packing fee
+      if (transactionInfo.getPackingFee() > 0) {
+        trigger.getExtMap().put("packingFee", transactionInfo.getPackingFee());
       }
     }
 
