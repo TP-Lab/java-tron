@@ -955,6 +955,11 @@ public class BlockTransactionPrinter {
       // Try to get the lowest block number
       try {
         lowestBlockNum = chainBaseManager.getLowestBlockNum();
+
+        // Check if this is a lite node (doesn't have genesis block)
+        boolean isLiteNode = chainBaseManager.isLiteNode();
+        System.out.println("Node type: " + (isLiteNode ? "Lite Node" : "Full Node"));
+
         if (lowestBlockNum < 0) {
           // If getLowestBlockNum returns -1 or negative, try alternative approach
           List<BlockCapsule> firstBlocks = chainBaseManager.getBlockStore().getLimitNumber(0, 1);
@@ -964,8 +969,28 @@ public class BlockTransactionPrinter {
             lowestBlockNum = 0;
           }
         }
+
+        // For full nodes, check if genesis block (block 0) is accessible
+        if (!isLiteNode) {
+          try {
+            BlockCapsule genesisBlock = chainBaseManager.getGenesisBlock();
+            if (genesisBlock != null) {
+              System.out.println("Genesis block found: " + genesisBlock.getBlockId().toString());
+              // For full nodes, lowest block should be 0 if genesis block exists
+              lowestBlockNum = 0;
+            }
+          } catch (Exception genesisException) {
+            System.out.println("Warning: Could not access genesis block: " + genesisException.getMessage());
+            logger.warn("Could not access genesis block: {}", genesisException.getMessage());
+          }
+        } else {
+          System.out.println("Lite node detected - genesis block (block 0) may not be available");
+          logger.info("Lite node detected - lowest available block: {}", lowestBlockNum);
+        }
+
       } catch (Exception e) {
         System.out.println("Warning: Could not get lowest block number, using 0. Error: " + e.getMessage());
+        logger.warn("Could not get lowest block number: {}", e.getMessage());
         lowestBlockNum = 0;
       }
 
@@ -1078,8 +1103,41 @@ public class BlockTransactionPrinter {
 
       // Validate user input against database range (block range mode)
       if (startBlockNum < lowestBlockNum || endBlockNum > latestBlockNum) {
-        System.out.println("Error: Requested block range (" + startBlockNum + " to " + endBlockNum + 
-                          ") is outside the available range (" + lowestBlockNum + " to " + latestBlockNum + ")");
+        String errorMessage = "Error: Requested block range (" + startBlockNum + " to " + endBlockNum +
+                          ") is outside the available range (" + lowestBlockNum + " to " + latestBlockNum + ")";
+        System.out.println(errorMessage);
+        logger.error(errorMessage);
+
+        // Special message for genesis block queries
+        if (startBlockNum == 0 && lowestBlockNum > 0) {
+          System.out.println("\n=== Genesis Block (Block 0) Information ===");
+          System.out.println("You are trying to query genesis block (block 0), but this node's lowest available block is " + lowestBlockNum);
+          System.out.println("This could happen because:");
+          System.out.println("1. This is a Lite Node that doesn't store early blocks");
+          System.out.println("2. The database has been pruned to save space");
+          System.out.println("3. This is a snapshot database that starts from a later block");
+          System.out.println("\nTo query genesis block, you need:");
+          System.out.println("- A Full Node with complete blockchain data");
+          System.out.println("- Or access to a blockchain explorer");
+          System.out.println("- Or a database that includes the genesis block");
+
+          // Try to get genesis block information anyway
+          try {
+            BlockCapsule genesisBlock = chainBaseManager.getGenesisBlock();
+            if (genesisBlock != null) {
+              System.out.println("\nGenesis block information (from memory):");
+              System.out.println("Block ID: " + genesisBlock.getBlockId().toString());
+              System.out.println("Block Number: " + genesisBlock.getNum());
+              System.out.println("Timestamp: " + genesisBlock.getTimeStamp());
+              System.out.println("Transactions: " + genesisBlock.getTransactions().size());
+              logger.info("Genesis block found in memory: {}", genesisBlock.getBlockId().toString());
+            }
+          } catch (Exception e) {
+            System.out.println("Could not retrieve genesis block information: " + e.getMessage());
+            logger.warn("Could not retrieve genesis block information: {}", e.getMessage());
+          }
+        }
+
         context.close();
         System.out.println("=== Read-Only Database Query Failed - Exiting Program ===");
         return;
@@ -1105,7 +1163,50 @@ public class BlockTransactionPrinter {
         System.out.println("Fetching blocks from " + currentStart + " to " + currentEnd);
 
         // Get blocks in the current batch
-        List<BlockCapsule> blocks = chainBaseManager.getBlockStore().getLimitNumber(currentStart, limit);
+        List<BlockCapsule> blocks;
+
+        // Special handling for genesis block (block 0)
+        if (currentStart == 0) {
+          blocks = new ArrayList<>();
+          try {
+            // Try to get genesis block directly
+            BlockCapsule genesisBlock = chainBaseManager.getGenesisBlock();
+            if (genesisBlock != null && genesisBlock.getNum() == 0) {
+              blocks.add(genesisBlock);
+              System.out.println("Successfully retrieved genesis block directly");
+              logger.info("Successfully retrieved genesis block directly");
+            }
+          } catch (Exception e) {
+            System.out.println("Could not get genesis block directly: " + e.getMessage());
+            logger.warn("Could not get genesis block directly: {}", e.getMessage());
+          }
+
+          // If we need more blocks after genesis block, get them from BlockStore
+          if (limit > 1) {
+            try {
+              List<BlockCapsule> additionalBlocks = chainBaseManager.getBlockStore().getLimitNumber(1, limit - 1);
+              blocks.addAll(additionalBlocks);
+            } catch (Exception e) {
+              System.out.println("Could not get blocks after genesis: " + e.getMessage());
+              logger.warn("Could not get blocks after genesis: {}", e.getMessage());
+            }
+          }
+
+          // If we still don't have any blocks, try the normal approach
+          if (blocks.isEmpty()) {
+            try {
+              blocks = chainBaseManager.getBlockStore().getLimitNumber(currentStart, limit);
+            } catch (Exception e) {
+              System.out.println("Could not get blocks using normal approach: " + e.getMessage());
+              logger.warn("Could not get blocks using normal approach: {}", e.getMessage());
+              blocks = new ArrayList<>();
+            }
+          }
+        } else {
+          // Normal block retrieval for non-genesis blocks
+          blocks = chainBaseManager.getBlockStore().getLimitNumber(currentStart, limit);
+        }
+
         totalBlocks += blocks.size();
 
         // Track batch processing for statistics
