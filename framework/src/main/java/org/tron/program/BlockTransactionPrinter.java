@@ -13,6 +13,7 @@ import org.tron.common.application.TronApplicationContext;
 import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
 import org.tron.common.utils.StringUtil;
+import org.tron.common.utils.Sha256Hash;
 import org.tron.common.parameter.CommonParameter;
 import org.tron.core.ChainBaseManager;
 import org.tron.core.Constant;
@@ -331,6 +332,12 @@ public class BlockTransactionPrinter {
       return;
     }
 
+    // For genesis block transactions, we might only have transaction data without transactionInfo
+    if (transactionInfo == null && transaction != null) {
+      System.out.println("Note: Creating TransactionLogTrigger from transaction data only (no TransactionInfo available)");
+      logger.info("Creating TransactionLogTrigger from transaction data only for block {}", blockNumber);
+    }
+
     try {
       TransactionLogTrigger trigger = createTransactionLogTrigger(
           transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex);
@@ -344,11 +351,15 @@ public class BlockTransactionPrinter {
         if (kafkaTopic != null && kafkaProducer != null) {
           String key = kafkaKey != null ? kafkaKey : trigger.getTransactionId();
           // Additional check to ensure we don't send invalid transaction IDs
-          if (trigger.getTransactionId() != null && !"N/A".equals(trigger.getTransactionId()) && !trigger.getTransactionId().isEmpty()) {
+          // Accept calculated IDs for genesis transactions
+          if (trigger.getTransactionId() != null &&
+              !"N/A".equals(trigger.getTransactionId()) &&
+              !trigger.getTransactionId().isEmpty() &&
+              !trigger.getTransactionId().startsWith("UNKNOWN_TX_")) {
             sendToKafka(kafkaTopic, key, jsonOutput);
             logger.debug("TransactionLogTrigger sent to Kafka topic: {} with key: {}", kafkaTopic, key);
           } else {
-            System.out.println("Skipping Kafka send - invalid or missing transaction ID");
+            System.out.println("Skipping Kafka send - invalid or missing transaction ID: " + trigger.getTransactionId());
             logger.warn("Skipped Kafka send due to invalid transaction ID: {}", trigger.getTransactionId());
           }
         }
@@ -407,9 +418,20 @@ public class BlockTransactionPrinter {
     if (transactionInfo != null) {
       trigger.setTransactionId(Hex.toHexString(transactionInfo.getId().toByteArray()));
     } else if (transaction != null) {
-      // Calculate transaction ID from transaction if transactionInfo is not available
-      // This is a simplified approach - in real scenarios you might need the actual transaction ID
-      trigger.setTransactionId("N/A");
+      // For genesis block transactions, calculate transaction ID from the transaction itself
+      try {
+        // Use the transaction's hash as the transaction ID
+        byte[] txBytes = transaction.toByteArray();
+        String calculatedTxId = Hex.toHexString(Sha256Hash.hash(txBytes));
+        trigger.setTransactionId(calculatedTxId);
+        System.out.println("    Calculated transaction ID from transaction data: " + calculatedTxId);
+      } catch (Exception e) {
+        trigger.setTransactionId("GENESIS_TX_" + transactionIndex);
+        System.out.println("    Using fallback transaction ID: GENESIS_TX_" + transactionIndex);
+      }
+    } else {
+      // Last resort: use a placeholder ID
+      trigger.setTransactionId("UNKNOWN_TX_" + transactionIndex);
     }
 
     trigger.setBlockHash(blockHash);
@@ -1258,15 +1280,32 @@ public class BlockTransactionPrinter {
               // Get transaction using wallet.getTransactionById (walletsolidity/gettransactionbyid equivalent)
               Transaction transaction = wallet.getTransactionById(txIdBytes);
 
+              // For genesis block or other special cases, if wallet methods return null,
+              // try to get transaction directly from the TransactionCapsule
+              if (transaction == null && trx != null) {
+                try {
+                  transaction = trx.getInstance();
+                  System.out.println("    Retrieved transaction directly from TransactionCapsule");
+                  logger.debug("Retrieved transaction directly from TransactionCapsule for ID: {}", txId);
+                } catch (Exception e) {
+                  System.out.println("    Could not get transaction from TransactionCapsule: " + e.getMessage());
+                  logger.warn("Could not get transaction from TransactionCapsule for ID {}: {}", txId, e.getMessage());
+                }
+              }
+
               // Handle different output formats
               if ("trigger".equals(outputFormat)) {
                 // Use TransactionLogTrigger format with optional Kafka sending
                 String kafkaTopicToUse = useKafka ? kafkaTopic : null;
                 String kafkaKey = txId; // Use transaction ID as Kafka key
 
-                // Log if transaction data is missing (this shouldn't happen in block processing but good to track)
+                // Log if transaction data is missing
                 if (transactionInfo == null && transaction == null) {
-                  logger.warn("Missing transaction data for ID {} in block {}", txId, blockNum);
+                  logger.warn("Missing transaction data for ID {} in block {} - this may be normal for genesis block transactions", txId, blockNum);
+                  System.out.println("    Warning: No transaction data available from wallet methods");
+                  if (blockNum == 0) {
+                    System.out.println("    Note: This is normal for genesis block transactions");
+                  }
                 }
 
                 printTransactionLogTrigger(transactionInfo, transaction, blockId, blockNum, timestamp, i,
