@@ -120,7 +120,7 @@ public class BlockTransactionPrinter {
     totalTransactionsProcessed = 0;
     lastBlocksProcessed = 0;
     lastTransactionsProcessed = 0;
-    log.info("Statistics tracking initialized");
+    logger.info("Statistics tracking initialized");
   }
 
   /**
@@ -160,7 +160,7 @@ public class BlockTransactionPrinter {
       );
 
       System.out.println("=== " + statsMessage + " ===");
-      log.info(statsMessage);
+      logger.info(statsMessage);
 
       // Update last stats tracking
       lastStatsTime = currentTime;
@@ -186,7 +186,7 @@ public class BlockTransactionPrinter {
     );
 
     System.out.println("=== " + finalStatsMessage + " ===");
-    log.info(finalStatsMessage);
+    logger.info(finalStatsMessage);
   }
 
   /**
@@ -213,11 +213,11 @@ public class BlockTransactionPrinter {
       kafkaProducer = new KafkaProducer<>(props);
       String kafkaInitMessage = "Kafka producer initialized successfully with brokers: " + kafkaBrokers;
       System.out.println(kafkaInitMessage);
-      log.info(kafkaInitMessage);
+      logger.info(kafkaInitMessage);
     } catch (Exception e) {
       String kafkaErrorMessage = "Failed to initialize Kafka producer: " + e.getMessage();
       System.err.println(kafkaErrorMessage);
-      log.error(kafkaErrorMessage, e);
+      logger.error(kafkaErrorMessage, e);
       e.printStackTrace();
       kafkaProducer = null;
     }
@@ -230,7 +230,7 @@ public class BlockTransactionPrinter {
     if (kafkaProducer == null) {
       String errorMessage = "Kafka producer not initialized. Cannot send message.";
       System.err.println(errorMessage);
-      log.warn(errorMessage);
+      logger.warn(errorMessage);
       return;
     }
 
@@ -240,18 +240,18 @@ public class BlockTransactionPrinter {
         if (exception != null) {
           String errorMessage = "Failed to send message to Kafka: " + exception.getMessage();
           System.err.println(errorMessage);
-          log.error(errorMessage, exception);
+          logger.error(errorMessage, exception);
           exception.printStackTrace();
         } else {
           String successMessage = "Message sent to Kafka topic '" + topic + "' at offset " + metadata.offset();
           System.out.println(successMessage);
-          log.debug(successMessage);
+          logger.debug(successMessage);
         }
       });
     } catch (Exception e) {
       String errorMessage = "Error sending message to Kafka: " + e.getMessage();
       System.err.println(errorMessage);
-      log.error(errorMessage, e);
+      logger.error(errorMessage, e);
       e.printStackTrace();
     }
   }
@@ -266,11 +266,11 @@ public class BlockTransactionPrinter {
         kafkaProducer.close();
         String closeMessage = "Kafka producer closed successfully.";
         System.out.println(closeMessage);
-        log.info(closeMessage);
+        logger.info(closeMessage);
       } catch (Exception e) {
         String errorMessage = "Error closing Kafka producer: " + e.getMessage();
         System.err.println(errorMessage);
-        log.error(errorMessage, e);
+        logger.error(errorMessage, e);
         e.printStackTrace();
       } finally {
         kafkaProducer = null;
@@ -337,7 +337,7 @@ public class BlockTransactionPrinter {
         if (kafkaTopic != null && kafkaProducer != null) {
           String key = kafkaKey != null ? kafkaKey : trigger.getTransactionId();
           sendToKafka(kafkaTopic, key, jsonOutput);
-          log.debug("TransactionLogTrigger sent to Kafka topic: {} with key: {}", kafkaTopic, key);
+          logger.debug("TransactionLogTrigger sent to Kafka topic: {} with key: {}", kafkaTopic, key);
         }
       } else {
         System.out.println("Failed to serialize TransactionLogTrigger to JSON");
@@ -787,7 +787,7 @@ public class BlockTransactionPrinter {
         if (kafkaProducer == null) {
           String kafkaFailMessage = "Failed to initialize Kafka producer. Continuing without Kafka.";
           System.out.println(kafkaFailMessage);
-          log.warn(kafkaFailMessage);
+          logger.warn(kafkaFailMessage);
           useKafka = false;
         }
       }
@@ -978,7 +978,7 @@ public class BlockTransactionPrinter {
 
       String blockRangeMessage = "Database block range: " + lowestBlockNum + " to " + latestBlockNum;
       System.out.println("=== " + blockRangeMessage + " ===");
-      log.info(blockRangeMessage);
+      logger.info(blockRangeMessage);
 
       // Check if we have a valid block range
       if (latestBlockNum == 0 && lowestBlockNum == 0) {
@@ -997,7 +997,7 @@ public class BlockTransactionPrinter {
       if (isTransactionMode) {
         String queryMessage = "Querying transaction: " + transactionId;
         System.out.println("=== " + queryMessage + " ===");
-        log.info(queryMessage);
+        logger.info(queryMessage);
 
         try {
           ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(transactionId));
@@ -1065,7 +1065,7 @@ public class BlockTransactionPrinter {
 
       String processingMessage = "Printing transactions from block " + startBlockNum + " to " + endBlockNum;
       System.out.println("=== " + processingMessage + " ===");
-      log.info(processingMessage);
+      logger.info(processingMessage);
 
       // Initialize counters for summary
       int totalBlocks = 0;
@@ -1109,7 +1109,7 @@ public class BlockTransactionPrinter {
           // Log block processing details
           String blockProcessMessage = String.format("Processing Block #%d with %d transactions",
                                                     blockNum, transactions.size());
-          log.debug(blockProcessMessage);
+          logger.debug(blockProcessMessage);
 
           if (transactions.isEmpty()) {
             System.out.println("  No transactions in this block");
@@ -1196,23 +1196,23 @@ public class BlockTransactionPrinter {
       // Log summary to file
       String summaryMessage = String.format("Processing completed - Total blocks: %d, Total transactions: %d, Average tx/block: %.2f",
                                           totalBlocks, totalTransactions, avgTxPerBlock);
-      log.info(summaryMessage);
+      logger.info(summaryMessage);
 
       // Shutdown the context
       context.close();
       String completionMessage = "Transaction printing completed successfully.";
       System.out.println("\n" + completionMessage);
-      log.info(completionMessage);
+      logger.info(completionMessage);
       System.out.println("=== Read-Only Database Query Completed - Exiting Program ===");
 
     } catch (NumberFormatException e) {
       String errorMessage = "Error: Block numbers must be valid integers";
       System.out.println(errorMessage);
-      log.error(errorMessage, e);
+      logger.error(errorMessage, e);
     } catch (Exception e) {
       String errorMessage = "Error: " + e.getMessage();
       System.out.println(errorMessage);
-      log.error(errorMessage, e);
+      logger.error(errorMessage, e);
       e.printStackTrace();
     } finally {
       // Close Kafka producer if it was initialized
