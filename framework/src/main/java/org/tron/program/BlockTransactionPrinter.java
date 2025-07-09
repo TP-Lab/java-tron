@@ -422,7 +422,7 @@ public class BlockTransactionPrinter {
       try {
         // Use the transaction's hash as the transaction ID
         byte[] txBytes = transaction.toByteArray();
-        String calculatedTxId = Hex.toHexString(Sha256Hash.hash(txBytes));
+        String calculatedTxId = Hex.toHexString(Sha256Hash.hash(true, txBytes));
         trigger.setTransactionId(calculatedTxId);
         System.out.println("    Calculated transaction ID from transaction data: " + calculatedTxId);
       } catch (Exception e) {
