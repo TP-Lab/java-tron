@@ -14,7 +14,6 @@ import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
 import org.tron.common.utils.StringUtil;
 import org.tron.common.utils.Sha256Hash;
-import org.tron.common.parameter.CommonParameter;
 import org.tron.core.ChainBaseManager;
 import org.tron.core.Constant;
 import org.tron.core.Wallet;
@@ -313,7 +312,15 @@ public class BlockTransactionPrinter {
    */
   private static void printTransactionLogTrigger(TransactionInfo transactionInfo, Transaction transaction,
       String blockHash, long blockNumber, long timestamp, int transactionIndex, String title) {
-    printTransactionLogTrigger(transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex, title, null, null);
+    printTransactionLogTrigger(transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex, title, null, null, null);
+  }
+
+  /**
+   * Print transaction in TransactionLogTrigger format with TransactionCapsule
+   */
+  private static void printTransactionLogTrigger(TransactionInfo transactionInfo, Transaction transaction,
+      String blockHash, long blockNumber, long timestamp, int transactionIndex, String title, TransactionCapsule trxCapsule) {
+    printTransactionLogTrigger(transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex, title, null, null, trxCapsule);
   }
 
   /**
@@ -322,6 +329,15 @@ public class BlockTransactionPrinter {
   private static void printTransactionLogTrigger(TransactionInfo transactionInfo, Transaction transaction,
       String blockHash, long blockNumber, long timestamp, int transactionIndex, String title,
       String kafkaTopic, String kafkaKey) {
+    printTransactionLogTrigger(transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex, title, kafkaTopic, kafkaKey, null);
+  }
+
+  /**
+   * Print transaction in TransactionLogTrigger format with optional Kafka sending and TransactionCapsule
+   */
+  private static void printTransactionLogTrigger(TransactionInfo transactionInfo, Transaction transaction,
+      String blockHash, long blockNumber, long timestamp, int transactionIndex, String title,
+      String kafkaTopic, String kafkaKey, TransactionCapsule trxCapsule) {
 
     System.out.println("=== " + title + " ===");
 
@@ -340,7 +356,7 @@ public class BlockTransactionPrinter {
 
     try {
       TransactionLogTrigger trigger = createTransactionLogTrigger(
-          transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex);
+          transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex, trxCapsule);
 
       System.out.println("--- TransactionLogTrigger Format ---");
       String jsonOutput = JsonUtil.obj2Json(trigger);
@@ -411,27 +427,56 @@ public class BlockTransactionPrinter {
   private static TransactionLogTrigger createTransactionLogTrigger(
       TransactionInfo transactionInfo, Transaction transaction,
       String blockHash, long blockNumber, long timestamp, int transactionIndex) {
+    return createTransactionLogTrigger(transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex, null);
+  }
+
+  /**
+   * Create TransactionLogTrigger from TransactionInfo and Transaction data with optional TransactionCapsule
+   */
+  private static TransactionLogTrigger createTransactionLogTrigger(
+      TransactionInfo transactionInfo, Transaction transaction,
+      String blockHash, long blockNumber, long timestamp, int transactionIndex, TransactionCapsule trxCapsule) {
 
     TransactionLogTrigger trigger = new TransactionLogTrigger();
 
-    // Basic transaction information
-    if (transactionInfo != null) {
-      trigger.setTransactionId(Hex.toHexString(transactionInfo.getId().toByteArray()));
-    } else if (transaction != null) {
-      // For genesis block transactions, calculate transaction ID from the transaction itself
+    // Basic transaction information - prioritize TransactionCapsule ID if available
+    if (trxCapsule != null) {
       try {
-        // Use the transaction's hash as the transaction ID
-        byte[] txBytes = transaction.toByteArray();
-        String calculatedTxId = Hex.toHexString(Sha256Hash.hash(true, txBytes));
+        String trxCapsuleId = trxCapsule.getTransactionId().toString();
+        trigger.setTransactionId(trxCapsuleId);
+        System.out.println("    Using transaction ID from TransactionCapsule: " + trxCapsuleId);
+      } catch (Exception e) {
+        System.out.println("    Could not get transaction ID from TransactionCapsule: " + e.getMessage());
+        // Fall through to other methods
+      }
+    }
+
+    // If we don't have ID from TransactionCapsule, try TransactionInfo
+    if (trigger.getTransactionId() == null && transactionInfo != null) {
+      trigger.setTransactionId(Hex.toHexString(transactionInfo.getId().toByteArray()));
+      System.out.println("    Using transaction ID from TransactionInfo");
+    }
+
+    // If still no ID, calculate from transaction data
+    if (trigger.getTransactionId() == null && transaction != null) {
+      try {
+        // Use the correct TRON transaction ID calculation: hash of RawData
+        byte[] rawDataBytes = transaction.getRawData().toByteArray();
+        Sha256Hash txHash = Sha256Hash.of(CommonParameter.getInstance().isECKeyCryptoEngine(), rawDataBytes);
+        String calculatedTxId = txHash.toString();
         trigger.setTransactionId(calculatedTxId);
-        System.out.println("    Calculated transaction ID from transaction data: " + calculatedTxId);
+        System.out.println("    Calculated transaction ID from RawData: " + calculatedTxId);
       } catch (Exception e) {
         trigger.setTransactionId("GENESIS_TX_" + transactionIndex);
         System.out.println("    Using fallback transaction ID: GENESIS_TX_" + transactionIndex);
+        System.out.println("    Error calculating transaction ID: " + e.getMessage());
       }
-    } else {
-      // Last resort: use a placeholder ID
+    }
+
+    // Last resort: use a placeholder ID
+    if (trigger.getTransactionId() == null) {
       trigger.setTransactionId("UNKNOWN_TX_" + transactionIndex);
+      System.out.println("    Using unknown transaction ID placeholder");
     }
 
     trigger.setBlockHash(blockHash);
@@ -1287,6 +1332,16 @@ public class BlockTransactionPrinter {
                   transaction = trx.getInstance();
                   System.out.println("    Retrieved transaction directly from TransactionCapsule");
                   logger.debug("Retrieved transaction directly from TransactionCapsule for ID: {}", txId);
+
+                  // Also get the correct transaction ID from TransactionCapsule
+                  String correctTxId = trx.getTransactionId().toString();
+                  if (!correctTxId.equals(txId)) {
+                    System.out.println("    Note: Correct transaction ID from TransactionCapsule: " + correctTxId);
+                    System.out.println("    Original ID from block: " + txId);
+                    logger.info("Transaction ID mismatch - Correct: {}, Original: {}", correctTxId, txId);
+                    // Update txId to use the correct one
+                    txId = correctTxId;
+                  }
                 } catch (Exception e) {
                   System.out.println("    Could not get transaction from TransactionCapsule: " + e.getMessage());
                   logger.warn("Could not get transaction from TransactionCapsule for ID {}: {}", txId, e.getMessage());
@@ -1309,7 +1364,7 @@ public class BlockTransactionPrinter {
                 }
 
                 printTransactionLogTrigger(transactionInfo, transaction, blockId, blockNum, timestamp, i,
-                    "Transaction #" + (i + 1) + " (TransactionLogTrigger Format)", kafkaTopicToUse, kafkaKey);
+                    "Transaction #" + (i + 1) + " (TransactionLogTrigger Format)", kafkaTopicToUse, kafkaKey, trx);
               } else {
                 // Use traditional formats
                 if (transactionInfo != null) {
