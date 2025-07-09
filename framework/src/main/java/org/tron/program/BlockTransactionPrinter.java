@@ -324,6 +324,13 @@ public class BlockTransactionPrinter {
 
     System.out.println("=== " + title + " ===");
 
+    // Check if we have valid transaction data before proceeding
+    if (transactionInfo == null && transaction == null) {
+      System.out.println("No transaction data available - skipping TransactionLogTrigger creation and Kafka sending");
+      logger.warn("Attempted to create TransactionLogTrigger with null transactionInfo and transaction");
+      return;
+    }
+
     try {
       TransactionLogTrigger trigger = createTransactionLogTrigger(
           transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex);
@@ -333,17 +340,26 @@ public class BlockTransactionPrinter {
       if (jsonOutput != null) {
         System.out.println(jsonOutput);
 
-        // Send to Kafka if configured
+        // Send to Kafka if configured and we have valid transaction data
         if (kafkaTopic != null && kafkaProducer != null) {
           String key = kafkaKey != null ? kafkaKey : trigger.getTransactionId();
-          sendToKafka(kafkaTopic, key, jsonOutput);
-          logger.debug("TransactionLogTrigger sent to Kafka topic: {} with key: {}", kafkaTopic, key);
+          // Additional check to ensure we don't send invalid transaction IDs
+          if (trigger.getTransactionId() != null && !"N/A".equals(trigger.getTransactionId()) && !trigger.getTransactionId().isEmpty()) {
+            sendToKafka(kafkaTopic, key, jsonOutput);
+            logger.debug("TransactionLogTrigger sent to Kafka topic: {} with key: {}", kafkaTopic, key);
+          } else {
+            System.out.println("Skipping Kafka send - invalid or missing transaction ID");
+            logger.warn("Skipped Kafka send due to invalid transaction ID: {}", trigger.getTransactionId());
+          }
         }
       } else {
         System.out.println("Failed to serialize TransactionLogTrigger to JSON");
+        logger.error("Failed to serialize TransactionLogTrigger to JSON for transaction");
       }
     } catch (Exception e) {
-      System.out.println("Error creating TransactionLogTrigger: " + e.getMessage());
+      String errorMessage = "Error creating TransactionLogTrigger: " + e.getMessage();
+      System.out.println(errorMessage);
+      logger.error(errorMessage, e);
       e.printStackTrace();
     }
   }
@@ -1004,6 +1020,19 @@ public class BlockTransactionPrinter {
           TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
           Transaction transaction = wallet.getTransactionById(txIdBytes);
 
+          // Check if transaction was found before processing
+          if (transactionInfo == null && transaction == null) {
+            String notFoundMessage = "Transaction not found: " + transactionId;
+            System.out.println(notFoundMessage);
+            logger.warn(notFoundMessage);
+            System.out.println("This could happen if:");
+            System.out.println("1. The transaction ID is incorrect");
+            System.out.println("2. The transaction is not in this database");
+            System.out.println("3. The transaction is too old and has been pruned");
+            // Don't process or send to Kafka if transaction is not found
+            return;
+          }
+
           if ("trigger".equals(outputFormat)) {
             // For trigger format, we need block information
             String blockHash = "N/A";
@@ -1023,6 +1052,7 @@ public class BlockTransactionPrinter {
                 }
               } catch (Exception e) {
                 System.out.println("Warning: Could not retrieve block hash for block " + blockNumber);
+                logger.warn("Could not retrieve block hash for block {}: {}", blockNumber, e.getMessage());
               }
             }
 
@@ -1034,14 +1064,6 @@ public class BlockTransactionPrinter {
             // Use traditional formats
             printTransactionInfo(transactionInfo, outputFormat, "Transaction Info (wallet/gettransactioninfobyid)");
             printTransaction(transaction, outputFormat, "Transaction Details (walletsolidity/gettransactionbyid)");
-          }
-
-          if (transactionInfo == null && transaction == null) {
-            System.out.println("Transaction not found: " + transactionId);
-            System.out.println("This could happen if:");
-            System.out.println("1. The transaction ID is incorrect");
-            System.out.println("2. The transaction is not in this database");
-            System.out.println("3. The transaction is too old and has been pruned");
           }
         } catch (Exception e) {
           System.out.println("Error querying transaction: " + e.getMessage());
@@ -1132,6 +1154,12 @@ public class BlockTransactionPrinter {
                 // Use TransactionLogTrigger format with optional Kafka sending
                 String kafkaTopicToUse = useKafka ? kafkaTopic : null;
                 String kafkaKey = txId; // Use transaction ID as Kafka key
+
+                // Log if transaction data is missing (this shouldn't happen in block processing but good to track)
+                if (transactionInfo == null && transaction == null) {
+                  logger.warn("Missing transaction data for ID {} in block {}", txId, blockNum);
+                }
+
                 printTransactionLogTrigger(transactionInfo, transaction, blockId, blockNum, timestamp, i,
                     "Transaction #" + (i + 1) + " (TransactionLogTrigger Format)", kafkaTopicToUse, kafkaKey);
               } else {
