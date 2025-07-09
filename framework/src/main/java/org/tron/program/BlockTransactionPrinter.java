@@ -47,6 +47,13 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Properties;
+
+// Kafka imports
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringSerializer;
 
 /**
  * A test program to print transactions from a specified block range.
@@ -66,6 +73,8 @@ import java.util.Objects;
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 73592989 73592991 -c main_net_config.conf -d /tron/light/
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f trigger
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f json
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f trigger -kb localhost:9092 -kt tron-transactions
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter -tx <txid> -f trigger -kb localhost:9092 -kt tron-transactions
  * 
  * Options:
  *    -c <config_file>: Specify a custom configuration file
@@ -75,6 +84,8 @@ import java.util.Objects;
  *        protobuf - Protobuf toString format
  *        both     - Both JSON and protobuf formats
  *        trigger  - TransactionLogTrigger format (structured JSON with comprehensive transaction data)
+ *    -kb <kafka_brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)
+ *    -kt <kafka_topic>: Kafka topic name for sending trigger data
  *    (Other standard TRON node options are also supported)
  * 
  * The program will:
@@ -88,6 +99,81 @@ import java.util.Objects;
  */
 @Slf4j(topic = "app")
 public class BlockTransactionPrinter {
+
+  private static KafkaProducer<String, String> kafkaProducer = null;
+
+  /**
+   * Initialize Kafka producer
+   */
+  private static void initKafkaProducer(String kafkaBrokers) {
+    if (kafkaProducer != null) {
+      return; // Already initialized
+    }
+
+    try {
+      Properties props = new Properties();
+      props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBrokers);
+      props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+      props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+
+      // Producer configuration for reliability
+      props.put(ProducerConfig.ACKS_CONFIG, "1"); // Wait for leader acknowledgment
+      props.put(ProducerConfig.RETRIES_CONFIG, 3);
+      props.put(ProducerConfig.BATCH_SIZE_CONFIG, 16384);
+      props.put(ProducerConfig.LINGER_MS_CONFIG, 1);
+      props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, 33554432);
+
+      kafkaProducer = new KafkaProducer<>(props);
+      System.out.println("Kafka producer initialized successfully with brokers: " + kafkaBrokers);
+    } catch (Exception e) {
+      System.err.println("Failed to initialize Kafka producer: " + e.getMessage());
+      e.printStackTrace();
+      kafkaProducer = null;
+    }
+  }
+
+  /**
+   * Send message to Kafka topic
+   */
+  private static void sendToKafka(String topic, String key, String message) {
+    if (kafkaProducer == null) {
+      System.err.println("Kafka producer not initialized. Cannot send message.");
+      return;
+    }
+
+    try {
+      ProducerRecord<String, String> record = new ProducerRecord<>(topic, key, message);
+      kafkaProducer.send(record, (metadata, exception) -> {
+        if (exception != null) {
+          System.err.println("Failed to send message to Kafka: " + exception.getMessage());
+          exception.printStackTrace();
+        } else {
+          System.out.println("Message sent to Kafka topic '" + topic + "' at offset " + metadata.offset());
+        }
+      });
+    } catch (Exception e) {
+      System.err.println("Error sending message to Kafka: " + e.getMessage());
+      e.printStackTrace();
+    }
+  }
+
+  /**
+   * Close Kafka producer
+   */
+  private static void closeKafkaProducer() {
+    if (kafkaProducer != null) {
+      try {
+        kafkaProducer.flush(); // Ensure all messages are sent
+        kafkaProducer.close();
+        System.out.println("Kafka producer closed successfully.");
+      } catch (Exception e) {
+        System.err.println("Error closing Kafka producer: " + e.getMessage());
+        e.printStackTrace();
+      } finally {
+        kafkaProducer = null;
+      }
+    }
+  }
 
   /**
    * Print transaction info in the specified format
@@ -123,6 +209,15 @@ public class BlockTransactionPrinter {
    */
   private static void printTransactionLogTrigger(TransactionInfo transactionInfo, Transaction transaction,
       String blockHash, long blockNumber, long timestamp, int transactionIndex, String title) {
+    printTransactionLogTrigger(transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex, title, null, null);
+  }
+
+  /**
+   * Print transaction in TransactionLogTrigger format with optional Kafka sending
+   */
+  private static void printTransactionLogTrigger(TransactionInfo transactionInfo, Transaction transaction,
+      String blockHash, long blockNumber, long timestamp, int transactionIndex, String title,
+      String kafkaTopic, String kafkaKey) {
 
     System.out.println("=== " + title + " ===");
 
@@ -134,6 +229,12 @@ public class BlockTransactionPrinter {
       String jsonOutput = JsonUtil.obj2Json(trigger);
       if (jsonOutput != null) {
         System.out.println(jsonOutput);
+
+        // Send to Kafka if configured
+        if (kafkaTopic != null && kafkaProducer != null) {
+          String key = kafkaKey != null ? kafkaKey : trigger.getTransactionId();
+          sendToKafka(kafkaTopic, key, jsonOutput);
+        }
       } else {
         System.out.println("Failed to serialize TransactionLogTrigger to JSON");
       }
@@ -494,6 +595,8 @@ public class BlockTransactionPrinter {
       System.out.println("  -c <config_file>: Specify a custom configuration file");
       System.out.println("  -d <data_dir>: Specify a custom data directory");
       System.out.println("  -f <format>: Output format (json|protobuf|both|trigger), default: both");
+      System.out.println("  -kb <brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)");
+      System.out.println("  -kt <topic>: Kafka topic name for sending trigger data (requires -kb)");
       return;
     }
 
@@ -505,6 +608,35 @@ public class BlockTransactionPrinter {
         System.out.println("Output format set to: " + outputFormat);
         break;
       }
+    }
+
+    // Parse Kafka options
+    String kafkaBrokers = null;
+    String kafkaTopic = null;
+    for (int i = 0; i < args.length - 1; i++) {
+      if ("-kb".equals(args[i])) {
+        kafkaBrokers = args[i + 1];
+        System.out.println("Kafka brokers set to: " + kafkaBrokers);
+      } else if ("-kt".equals(args[i])) {
+        kafkaTopic = args[i + 1];
+        System.out.println("Kafka topic set to: " + kafkaTopic);
+      }
+    }
+
+    // Validate Kafka configuration
+    boolean useKafka = kafkaBrokers != null && kafkaTopic != null;
+    if (kafkaBrokers != null && kafkaTopic == null) {
+      System.out.println("Error: Kafka brokers specified but no topic provided. Use -kt to specify topic.");
+      return;
+    }
+    if (kafkaBrokers == null && kafkaTopic != null) {
+      System.out.println("Error: Kafka topic specified but no brokers provided. Use -kb to specify brokers.");
+      return;
+    }
+    if (useKafka && !"trigger".equals(outputFormat)) {
+      System.out.println("Warning: Kafka output is only supported with 'trigger' format. Current format: " + outputFormat);
+      System.out.println("Kafka output will be disabled.");
+      useKafka = false;
     }
 
     // Validate output format
@@ -542,17 +674,26 @@ public class BlockTransactionPrinter {
         }
       }
 
+      // Initialize Kafka if configured
+      if (useKafka) {
+        initKafkaProducer(kafkaBrokers);
+        if (kafkaProducer == null) {
+          System.out.println("Failed to initialize Kafka producer. Continuing without Kafka.");
+          useKafka = false;
+        }
+      }
+
       // Initialize TRON environment
-      // Create a new array without the block numbers/transaction ID and -f parameter for Args.setParam
+      // Create a new array without the block numbers/transaction ID and custom parameters for Args.setParam
       String[] configArgs;
       int configStartIndex = isTransactionMode ? 2 : 2; // Both modes skip first 2 args
 
-      // Filter out -f parameter and its value since it's not a TRON node parameter
+      // Filter out custom parameters (-f, -kb, -kt) and their values since they're not TRON node parameters
       List<String> filteredArgs = new ArrayList<>();
       for (int i = configStartIndex; i < args.length; i++) {
-        if ("-f".equals(args[i])) {
-          // Skip -f and its value
-          i++; // Skip the next argument (format value)
+        if ("-f".equals(args[i]) || "-kb".equals(args[i]) || "-kt".equals(args[i])) {
+          // Skip custom parameter and its value
+          i++; // Skip the next argument (parameter value)
         } else {
           filteredArgs.add(args[i]);
         }
@@ -772,8 +913,10 @@ public class BlockTransactionPrinter {
               }
             }
 
+            String kafkaTopicToUse = useKafka ? kafkaTopic : null;
+            String kafkaKey = transactionId; // Use transaction ID as Kafka key
             printTransactionLogTrigger(transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex,
-                "Transaction (TransactionLogTrigger Format)");
+                "Transaction (TransactionLogTrigger Format)", kafkaTopicToUse, kafkaKey);
           } else {
             // Use traditional formats
             printTransactionInfo(transactionInfo, outputFormat, "Transaction Info (wallet/gettransactioninfobyid)");
@@ -862,9 +1005,11 @@ public class BlockTransactionPrinter {
 
               // Handle different output formats
               if ("trigger".equals(outputFormat)) {
-                // Use TransactionLogTrigger format
+                // Use TransactionLogTrigger format with optional Kafka sending
+                String kafkaTopicToUse = useKafka ? kafkaTopic : null;
+                String kafkaKey = txId; // Use transaction ID as Kafka key
                 printTransactionLogTrigger(transactionInfo, transaction, blockId, blockNum, timestamp, i,
-                    "Transaction #" + (i + 1) + " (TransactionLogTrigger Format)");
+                    "Transaction #" + (i + 1) + " (TransactionLogTrigger Format)", kafkaTopicToUse, kafkaKey);
               } else {
                 // Use traditional formats
                 if (transactionInfo != null) {
@@ -928,6 +1073,9 @@ public class BlockTransactionPrinter {
     } catch (Exception e) {
       System.out.println("Error: " + e.getMessage());
       e.printStackTrace();
+    } finally {
+      // Close Kafka producer if it was initialized
+      closeKafkaProducer();
     }
   }
 }
