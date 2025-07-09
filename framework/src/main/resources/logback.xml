@@ -76,7 +76,11 @@
     <appender-ref ref="METRICS" />
   </root>
 
-  <logger level="INFO" name="app"/>
+  <!-- Modified app logger to include BlockTransactionPrinter output -->
+  <logger level="DEBUG" name="app" additivity="false">
+    <appender-ref ref="BLOCK_TRANSACTION_PRINTER"/>
+    <appender-ref ref="ASYNC"/>
+  </logger>
   <logger level="INFO" name="net"/>
   <logger level="INFO" name="backup"/>
   <logger level="INFO" name="discover"/>
@@ -117,7 +121,7 @@
     </filter>
   </appender>
 
-  <!-- Logger for BlockTransactionPrinter with dedicated file output -->
+  <!-- Backup logger for the class name in case topic is not used -->
   <logger level="DEBUG" name="org.tron.program.BlockTransactionPrinter" additivity="false">
     <appender-ref ref="BLOCK_TRANSACTION_PRINTER"/>
     <appender-ref ref="CONSOLE"/>

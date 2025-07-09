@@ -707,7 +707,14 @@ public class BlockTransactionPrinter {
    *                       (Other standard TRON node options are also supported)
    */
   public static void main(String[] args) {
+    // Test logging immediately to verify configuration
+    System.out.println("=== BlockTransactionPrinter Starting ===");
+    logger.info("BlockTransactionPrinter started - testing log configuration");
+    logger.debug("Debug level logging test");
+    logger.warn("Warning level logging test");
+
     if (args.length < 2) {
+      String usageMessage = "Insufficient arguments provided";
       System.out.println("Usage:");
       System.out.println("  BlockTransactionPrinter <startBlockNum> <endBlockNum> [options]");
       System.out.println("  BlockTransactionPrinter -tx <transactionId> [options]");
@@ -717,6 +724,7 @@ public class BlockTransactionPrinter {
       System.out.println("  -f <format>: Output format (json|protobuf|both|trigger), default: both");
       System.out.println("  -kb <brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)");
       System.out.println("  -kt <topic>: Kafka topic name for sending trigger data (requires -kb)");
+      logger.error(usageMessage);
       return;
     }
 
