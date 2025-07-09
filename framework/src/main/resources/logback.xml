@@ -98,5 +98,30 @@
     <appender-ref ref="CONSOLE"/>
   </logger>
 
+  <!-- BlockTransactionPrinter specific appender -->
+  <appender name="BLOCK_TRANSACTION_PRINTER" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>./logs/block-transaction-printer.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+      <!-- rollover daily -->
+      <fileNamePattern>./logs/block-transaction-printer-%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+      <!-- each file should be at most 100MB, keep 7 days worth of history, but at most 10GB -->
+      <maxFileSize>100MB</maxFileSize>
+      <maxHistory>7</maxHistory>
+      <totalSizeCap>10GB</totalSizeCap>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%t] [%c{1}]\(%F:%L\) %m%n</pattern>
+    </encoder>
+    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+      <level>DEBUG</level>
+    </filter>
+  </appender>
+
+  <!-- Logger for BlockTransactionPrinter with dedicated file output -->
+  <logger level="DEBUG" name="org.tron.program.BlockTransactionPrinter" additivity="false">
+    <appender-ref ref="BLOCK_TRANSACTION_PRINTER"/>
+    <appender-ref ref="CONSOLE"/>
+  </logger>
+
 </configuration>
 
