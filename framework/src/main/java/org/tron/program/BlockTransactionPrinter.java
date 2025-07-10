@@ -134,7 +134,6 @@ public class BlockTransactionPrinter {
     threadPoolSize = poolSize;
     transactionExecutor = Executors.newFixedThreadPool(threadPoolSize);
     String threadPoolMessage = "Transaction processing thread pool initialized with " + threadPoolSize + " threads";
-    System.out.println(threadPoolMessage);
     logger.info(threadPoolMessage);
   }
 
@@ -144,26 +143,22 @@ public class BlockTransactionPrinter {
   private static void shutdownThreadPool() {
     if (transactionExecutor != null) {
       try {
-        System.out.println("Shutting down transaction processing thread pool...");
+        logger.debug("Shutting down transaction processing thread pool...");
         transactionExecutor.shutdown();
 
         // Wait for existing tasks to complete
         if (!transactionExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
-          System.out.println("Thread pool did not terminate gracefully, forcing shutdown...");
+          logger.warn("Thread pool did not terminate gracefully, forcing shutdown...");
           transactionExecutor.shutdownNow();
 
           // Wait a bit more for tasks to respond to being cancelled
           if (!transactionExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
-            System.err.println("Thread pool did not terminate after forced shutdown");
             logger.error("Thread pool did not terminate after forced shutdown");
           }
         }
 
-        String shutdownMessage = "Transaction processing thread pool shut down successfully";
-        System.out.println(shutdownMessage);
-        logger.info(shutdownMessage);
+        logger.info("Transaction processing thread pool shut down successfully");
       } catch (InterruptedException e) {
-        System.err.println("Thread pool shutdown interrupted: " + e.getMessage());
         logger.error("Thread pool shutdown interrupted", e);
         transactionExecutor.shutdownNow();
         Thread.currentThread().interrupt();
@@ -275,13 +270,10 @@ public class BlockTransactionPrinter {
 
       kafkaProducer = new KafkaProducer<>(props);
       String kafkaInitMessage = "Kafka producer initialized successfully with brokers: " + kafkaBrokers;
-      System.out.println(kafkaInitMessage);
       logger.info(kafkaInitMessage);
     } catch (Exception e) {
       String kafkaErrorMessage = "Failed to initialize Kafka producer: " + e.getMessage();
-      System.err.println(kafkaErrorMessage);
       logger.error(kafkaErrorMessage, e);
-      e.printStackTrace();
       kafkaProducer = null;
     }
   }
@@ -302,13 +294,9 @@ public class BlockTransactionPrinter {
       kafkaProducer.send(record, (metadata, exception) -> {
         if (exception != null) {
           String errorMessage = "Failed to send message to Kafka: " + exception.getMessage();
-          System.err.println(errorMessage);
           logger.error(errorMessage, exception);
-          exception.printStackTrace();
         } else {
-          String successMessage = "Message sent to Kafka topic '" + topic + "' at offset " + metadata.offset();
-          System.out.println(successMessage);
-          logger.debug(successMessage);
+          logger.debug("Message sent to Kafka topic '{}' at offset {}", topic, metadata.offset());
         }
       });
     } catch (Exception e) {
@@ -327,14 +315,9 @@ public class BlockTransactionPrinter {
       try {
         kafkaProducer.flush(); // Ensure all messages are sent
         kafkaProducer.close();
-        String closeMessage = "Kafka producer closed successfully.";
-        System.out.println(closeMessage);
-        logger.info(closeMessage);
+        logger.info("Kafka producer closed successfully");
       } catch (Exception e) {
-        String errorMessage = "Error closing Kafka producer: " + e.getMessage();
-        System.err.println(errorMessage);
-        logger.error(errorMessage, e);
-        e.printStackTrace();
+        logger.error("Error closing Kafka producer: " + e.getMessage(), e);
       } finally {
         kafkaProducer = null;
       }
@@ -406,25 +389,22 @@ public class BlockTransactionPrinter {
 
     // Check if we have valid transaction data before proceeding
     if (transactionInfo == null && transaction == null) {
-      System.out.println("No transaction data available - skipping TransactionLogTrigger creation and Kafka sending");
       logger.warn("Attempted to create TransactionLogTrigger with null transactionInfo and transaction");
       return;
     }
 
     // For genesis block transactions, we might only have transaction data without transactionInfo
     if (transactionInfo == null && transaction != null) {
-      System.out.println("Note: Creating TransactionLogTrigger from transaction data only (no TransactionInfo available)");
-      logger.info("Creating TransactionLogTrigger from transaction data only for block {}", blockNumber);
+      logger.debug("Creating TransactionLogTrigger from transaction data only for block {}", blockNumber);
     }
 
     try {
       TransactionLogTrigger trigger = createTransactionLogTrigger(
           transactionInfo, transaction, blockHash, blockNumber, timestamp, transactionIndex, trxCapsule);
 
-      System.out.println("--- TransactionLogTrigger Format ---");
       String jsonOutput = JsonUtil.obj2Json(trigger);
       if (jsonOutput != null) {
-        System.out.println(jsonOutput);
+        boolean sentToKafka = false;
 
         // Send to Kafka if configured and we have valid transaction data
         if (kafkaTopic != null && kafkaProducer != null) {
@@ -437,20 +417,21 @@ public class BlockTransactionPrinter {
               !trigger.getTransactionId().startsWith("UNKNOWN_TX_")) {
             sendToKafka(kafkaTopic, key, jsonOutput);
             logger.debug("TransactionLogTrigger sent to Kafka topic: {} with key: {}", kafkaTopic, key);
+            sentToKafka = true;
           } else {
-            System.out.println("Skipping Kafka send - invalid or missing transaction ID: " + trigger.getTransactionId());
             logger.warn("Skipped Kafka send due to invalid transaction ID: {}", trigger.getTransactionId());
           }
         }
+
+        // Only print to console if not sent to Kafka
+        if (!sentToKafka) {
+          System.out.println(jsonOutput);
+        }
       } else {
-        System.out.println("Failed to serialize TransactionLogTrigger to JSON");
         logger.error("Failed to serialize TransactionLogTrigger to JSON for transaction");
       }
     } catch (Exception e) {
-      String errorMessage = "Error creating TransactionLogTrigger: " + e.getMessage();
-      System.out.println(errorMessage);
-      logger.error(errorMessage, e);
-      e.printStackTrace();
+      logger.error("Error creating TransactionLogTrigger: " + e.getMessage(), e);
     }
   }
 
@@ -507,9 +488,9 @@ public class BlockTransactionPrinter {
       try {
         String trxCapsuleId = trxCapsule.getTransactionId().toString();
         trigger.setTransactionId(trxCapsuleId);
-        System.out.println("    Using transaction ID from TransactionCapsule: " + trxCapsuleId);
+        logger.debug("Using transaction ID from TransactionCapsule: {}", trxCapsuleId);
       } catch (Exception e) {
-        System.out.println("    Could not get transaction ID from TransactionCapsule: " + e.getMessage());
+        logger.debug("Could not get transaction ID from TransactionCapsule: {}", e.getMessage());
         // Fall through to other methods
       }
     }
@@ -517,7 +498,7 @@ public class BlockTransactionPrinter {
     // If we don't have ID from TransactionCapsule, try TransactionInfo
     if (trigger.getTransactionId() == null && transactionInfo != null) {
       trigger.setTransactionId(Hex.toHexString(transactionInfo.getId().toByteArray()));
-      System.out.println("    Using transaction ID from TransactionInfo");
+      logger.debug("Using transaction ID from TransactionInfo");
     }
 
     // If still no ID, calculate from transaction data
@@ -528,18 +509,17 @@ public class BlockTransactionPrinter {
         Sha256Hash txHash = Sha256Hash.of(CommonParameter.getInstance().isECKeyCryptoEngine(), rawDataBytes);
         String calculatedTxId = txHash.toString();
         trigger.setTransactionId(calculatedTxId);
-        System.out.println("    Calculated transaction ID from RawData: " + calculatedTxId);
+        logger.debug("Calculated transaction ID from RawData: {}", calculatedTxId);
       } catch (Exception e) {
         trigger.setTransactionId("GENESIS_TX_" + transactionIndex);
-        System.out.println("    Using fallback transaction ID: GENESIS_TX_" + transactionIndex);
-        System.out.println("    Error calculating transaction ID: " + e.getMessage());
+        logger.debug("Using fallback transaction ID: GENESIS_TX_{}, Error: {}", transactionIndex, e.getMessage());
       }
     }
 
     // Last resort: use a placeholder ID
     if (trigger.getTransactionId() == null) {
       trigger.setTransactionId("UNKNOWN_TX_" + transactionIndex);
-      System.out.println("    Using unknown transaction ID placeholder");
+      logger.debug("Using unknown transaction ID placeholder");
     }
 
     trigger.setBlockHash(blockHash);
@@ -814,11 +794,10 @@ public class BlockTransactionPrinter {
       boolean useKafka, String kafkaTopic, Wallet wallet) {
 
     if (transactions.isEmpty()) {
-      System.out.println("  No transactions in this block");
       return;
     }
 
-    System.out.println("  Processing " + transactions.size() + " transactions concurrently...");
+    logger.debug("Processing {} transactions concurrently...", transactions.size());
 
     // Create a list to hold all the CompletableFuture tasks
     List<CompletableFuture<Void>> futures = new ArrayList<>();
@@ -835,13 +814,12 @@ public class BlockTransactionPrinter {
                            outputFormat, useKafka, kafkaTopic, wallet);
 
           int completed = processedCount.incrementAndGet();
-          if (completed % 10 == 0 || completed == transactions.size()) {
-            System.out.println("    Processed " + completed + "/" + transactions.size() + " transactions");
+          if (completed % 50 == 0 || completed == transactions.size()) {
+            logger.debug("Processed {}/{} transactions in block {}", completed, transactions.size(), blockNum);
           }
         } catch (Exception e) {
           String errorMessage = "Error processing transaction " + (transactionIndex + 1) +
                                " in block " + blockNum + ": " + e.getMessage();
-          System.err.println("    " + errorMessage);
           logger.error(errorMessage, e);
         }
       }, transactionExecutor);
@@ -855,11 +833,9 @@ public class BlockTransactionPrinter {
           futures.toArray(new CompletableFuture[0]));
       allFutures.get(); // This will block until all transactions are processed
 
-      System.out.println("  All " + transactions.size() + " transactions processed successfully");
+      logger.debug("All {} transactions processed successfully in block {}", transactions.size(), blockNum);
     } catch (Exception e) {
-      String errorMessage = "Error waiting for concurrent transaction processing to complete: " + e.getMessage();
-      System.err.println("  " + errorMessage);
-      logger.error(errorMessage, e);
+      logger.error("Error waiting for concurrent transaction processing to complete: " + e.getMessage(), e);
     }
   }
 
@@ -873,11 +849,7 @@ public class BlockTransactionPrinter {
     String txId = trx.getTransactionId().toString();
     ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
 
-    // Synchronize console output to prevent interleaved output
-    synchronized (System.out) {
-      System.out.println("  Transaction #" + (transactionIndex + 1) + " (Thread: " +
-                        Thread.currentThread().getName() + "):");
-    }
+    logger.debug("Processing transaction #{} (ID: {}) in block {}", transactionIndex + 1, txId, blockNum);
 
     // Get transaction info using wallet.getTransactionInfoById
     TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
@@ -890,26 +862,16 @@ public class BlockTransactionPrinter {
     if (transaction == null && trx != null) {
       try {
         transaction = trx.getInstance();
-        synchronized (System.out) {
-          System.out.println("    Retrieved transaction directly from TransactionCapsule");
-        }
         logger.debug("Retrieved transaction directly from TransactionCapsule for ID: {}", txId);
 
         // Also get the correct transaction ID from TransactionCapsule
         String correctTxId = trx.getTransactionId().toString();
         if (!correctTxId.equals(txId)) {
-          synchronized (System.out) {
-            System.out.println("    Note: Correct transaction ID from TransactionCapsule: " + correctTxId);
-            System.out.println("    Original ID from block: " + txId);
-          }
-          logger.info("Transaction ID mismatch - Correct: {}, Original: {}", correctTxId, txId);
+          logger.debug("Transaction ID mismatch - Correct: {}, Original: {}", correctTxId, txId);
           // Update txId to use the correct one
           txId = correctTxId;
         }
       } catch (Exception e) {
-        synchronized (System.out) {
-          System.out.println("    Could not get transaction from TransactionCapsule: " + e.getMessage());
-        }
         logger.warn("Could not get transaction from TransactionCapsule for ID {}: {}", txId, e.getMessage());
       }
     }
@@ -923,16 +885,10 @@ public class BlockTransactionPrinter {
       // Log if transaction data is missing
       if (transactionInfo == null && transaction == null) {
         logger.warn("Missing transaction data for ID {} in block {} - this may be normal for genesis block transactions", txId, blockNum);
-        synchronized (System.out) {
-          System.out.println("    Warning: No transaction data available from wallet methods");
-          if (blockNum == 0) {
-            System.out.println("    Note: This is normal for genesis block transactions");
-          }
-        }
       }
 
       printTransactionLogTrigger(transactionInfo, transaction, blockId, blockNum, timestamp, transactionIndex,
-          "Transaction #" + (transactionIndex + 1) + " (TransactionLogTrigger Format)", kafkaTopicToUse, kafkaKey, trx);
+          "Transaction #" + (transactionIndex + 1), kafkaTopicToUse, kafkaKey, trx);
     } else {
       // Use traditional formats - synchronize output to prevent interleaving
       synchronized (System.out) {
@@ -944,35 +900,23 @@ public class BlockTransactionPrinter {
               .addAllLog(newLogList)
               .build();
 
-          System.out.println("    === Transaction Info (wallet/gettransactioninfobyid) ===");
-
           if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println("    --- JSON Format ---");
             System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
           }
 
           if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println("    --- Protobuf Format ---");
             System.out.println(transactionInfoWithConvertedLogs.toString());
           }
-        } else {
-          System.out.println("    No transaction info found for ID: " + txId);
         }
 
         if (transaction != null) {
-          System.out.println("    === Transaction Details (walletsolidity/gettransactionbyid) ===");
-
           if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println("    --- JSON Format ---");
             System.out.println(JsonFormat.printToString(transaction, true));
           }
 
           if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println("    --- Protobuf Format ---");
             System.out.println(transaction.toString());
           }
-        } else {
-          System.out.println("    No transaction details found for ID: " + txId);
         }
       }
     }
@@ -1009,14 +953,9 @@ public class BlockTransactionPrinter {
    *                       (Other standard TRON node options are also supported)
    */
   public static void main(String[] args) {
-    // Test logging immediately to verify configuration
-    System.out.println("=== BlockTransactionPrinter Starting ===");
-    logger.info("BlockTransactionPrinter started - testing log configuration");
-    logger.debug("Debug level logging test");
-    logger.warn("Warning level logging test");
+    logger.info("BlockTransactionPrinter started");
 
     if (args.length < 2) {
-      String usageMessage = "Insufficient arguments provided";
       System.out.println("Usage:");
       System.out.println("  BlockTransactionPrinter <startBlockNum> <endBlockNum> [options]");
       System.out.println("  BlockTransactionPrinter -tx <transactionId> [options]");
@@ -1027,7 +966,6 @@ public class BlockTransactionPrinter {
       System.out.println("  -kb <brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)");
       System.out.println("  -kt <topic>: Kafka topic name for sending trigger data (requires -kb)");
       System.out.println("  -threads <count>: Number of threads for concurrent transaction processing, default: " + DEFAULT_THREAD_POOL_SIZE);
-      logger.error(usageMessage);
       return;
     }
 
@@ -1036,7 +974,7 @@ public class BlockTransactionPrinter {
     for (int i = 0; i < args.length - 1; i++) {
       if ("-f".equals(args[i])) {
         outputFormat = args[i + 1].toLowerCase();
-        System.out.println("Output format set to: " + outputFormat);
+        logger.info("Output format set to: {}", outputFormat);
         break;
       }
     }
@@ -1049,21 +987,21 @@ public class BlockTransactionPrinter {
     for (int i = 0; i < args.length - 1; i++) {
       if ("-kb".equals(args[i])) {
         kafkaBrokers = args[i + 1];
-        System.out.println("Kafka brokers set to: " + kafkaBrokers);
+        logger.info("Kafka brokers set to: {}", kafkaBrokers);
       } else if ("-kt".equals(args[i])) {
         kafkaTopic = args[i + 1];
-        System.out.println("Kafka topic set to: " + kafkaTopic);
+        logger.info("Kafka topic set to: {}", kafkaTopic);
       } else if ("-threads".equals(args[i])) {
         try {
           customThreadPoolSize = Integer.parseInt(args[i + 1]);
           if (customThreadPoolSize <= 0) {
-            System.out.println("Error: Thread pool size must be positive. Using default: " + DEFAULT_THREAD_POOL_SIZE);
+            logger.warn("Thread pool size must be positive. Using default: {}", DEFAULT_THREAD_POOL_SIZE);
             customThreadPoolSize = DEFAULT_THREAD_POOL_SIZE;
           } else {
-            System.out.println("Thread pool size set to: " + customThreadPoolSize);
+            logger.info("Thread pool size set to: {}", customThreadPoolSize);
           }
         } catch (NumberFormatException e) {
-          System.out.println("Error: Invalid thread pool size. Using default: " + DEFAULT_THREAD_POOL_SIZE);
+          logger.warn("Invalid thread pool size. Using default: {}", DEFAULT_THREAD_POOL_SIZE);
           customThreadPoolSize = DEFAULT_THREAD_POOL_SIZE;
         }
       }
@@ -1072,23 +1010,22 @@ public class BlockTransactionPrinter {
     // Validate Kafka configuration
     boolean useKafka = kafkaBrokers != null && kafkaTopic != null;
     if (kafkaBrokers != null && kafkaTopic == null) {
-      System.out.println("Error: Kafka brokers specified but no topic provided. Use -kt to specify topic.");
+      logger.error("Kafka brokers specified but no topic provided. Use -kt to specify topic.");
       return;
     }
     if (kafkaBrokers == null && kafkaTopic != null) {
-      System.out.println("Error: Kafka topic specified but no brokers provided. Use -kb to specify brokers.");
+      logger.error("Kafka topic specified but no brokers provided. Use -kb to specify brokers.");
       return;
     }
     if (useKafka && !"trigger".equals(outputFormat)) {
-      System.out.println("Warning: Kafka output is only supported with 'trigger' format. Current format: " + outputFormat);
-      System.out.println("Kafka output will be disabled.");
+      logger.warn("Kafka output is only supported with 'trigger' format. Current format: {}. Kafka output will be disabled.", outputFormat);
       useKafka = false;
     }
 
     // Validate output format
     if (!outputFormat.equals("json") && !outputFormat.equals("protobuf") &&
         !outputFormat.equals("both") && !outputFormat.equals("trigger")) {
-      System.out.println("Error: Invalid output format. Use 'json', 'protobuf', 'both', or 'trigger'");
+      logger.error("Invalid output format: {}. Use 'json', 'protobuf', 'both', or 'trigger'", outputFormat);
       return;
     }
 
@@ -1101,13 +1038,13 @@ public class BlockTransactionPrinter {
     try {
       if (isTransactionMode) {
         if (args.length < 2) {
-          System.out.println("Error: Transaction ID is required when using -tx option");
+          logger.error("Transaction ID is required when using -tx option");
           return;
         }
         transactionId = args[1];
         // Validate transaction ID format (should be 64 character hex string)
         if (transactionId.length() != 64 || !transactionId.matches("[0-9a-fA-F]+")) {
-          System.out.println("Error: Invalid transaction ID format. Expected 64-character hex string.");
+          logger.error("Invalid transaction ID format. Expected 64-character hex string.");
           return;
         }
       } else {
@@ -1115,7 +1052,7 @@ public class BlockTransactionPrinter {
         endBlockNum = Long.parseLong(args[1]);
 
         if (startBlockNum < 0 || endBlockNum < 0 || startBlockNum > endBlockNum) {
-          System.out.println("Invalid block range. Start block must be <= end block and both must be >= 0");
+          logger.error("Invalid block range. Start block must be <= end block and both must be >= 0");
           return;
         }
       }
@@ -1130,9 +1067,7 @@ public class BlockTransactionPrinter {
       if (useKafka) {
         initKafkaProducer(kafkaBrokers);
         if (kafkaProducer == null) {
-          String kafkaFailMessage = "Failed to initialize Kafka producer. Continuing without Kafka.";
-          System.out.println(kafkaFailMessage);
-          logger.warn(kafkaFailMessage);
+          logger.warn("Failed to initialize Kafka producer. Continuing without Kafka.");
           useKafka = false;
         }
       }
@@ -1175,7 +1110,7 @@ public class BlockTransactionPrinter {
       CommonParameter.getInstance().setMetricsPrometheusEnable(false);
 
       // Enable read-only mode for database operations
-      System.out.println("=== Enabling Database Read-Only Mode ===");
+      logger.info("Enabling database read-only mode");
       System.setProperty("database.readonly", "true");
       System.setProperty("storage.readonly", "true");
 
@@ -1185,97 +1120,56 @@ public class BlockTransactionPrinter {
       if (Args.getInstance().getStorage() != null) {
         Args.getInstance().getStorage().setDbSync(false);
         Args.getInstance().getStorage().setMaxFlushCount(0); // Disable flushing to prevent writes
-        System.out.println("Database sync disabled for read-only mode");
-        System.out.println("Database flush count set to 0 for read-only mode");
+        logger.debug("Database sync disabled for read-only mode");
       }
 
-      // Print detailed database initialization information
-      System.out.println("=== Database Initialization Information ===");
+      // Log database path
       String databasePath = Args.getInstance().getOutputDirectory();
-      System.out.println("Database directory path: " + databasePath);
+      logger.info("Database directory: {}", databasePath);
 
       File dbDir = new File(databasePath);
-      System.out.println("Database directory exists: " + dbDir.exists());
-      System.out.println("Database directory is directory: " + dbDir.isDirectory());
-      System.out.println("Database directory absolute path: " + dbDir.getAbsolutePath());
-
-      if (dbDir.exists()) {
-        System.out.println("Database directory is readable: " + dbDir.canRead());
-        System.out.println("Database directory is writable: " + dbDir.canWrite());
-
-        File[] files = dbDir.listFiles();
-        if (files != null) {
-          System.out.println("Contents of database directory (" + files.length + " items):");
-          for (File file : files) {
-            String type = file.isDirectory() ? "[DIR]" : "[FILE]";
-            long size = file.isFile() ? file.length() : 0;
-            System.out.println("  " + type + " " + file.getName() + 
-                             (file.isFile() ? " (" + size + " bytes)" : ""));
-          }
-        } else {
-          System.out.println("Could not list contents of database directory (permission denied?)");
-        }
-      } else {
-        System.out.println("Database directory does not exist!");
-        File parentDir = dbDir.getParentFile();
-        if (parentDir != null) {
-          System.out.println("Parent directory: " + parentDir.getAbsolutePath());
-          System.out.println("Parent directory exists: " + parentDir.exists());
-        }
+      if (!dbDir.exists()) {
+        logger.error("Database directory does not exist: {}", databasePath);
+        return;
       }
-      System.out.println("=== End Database Initialization Information ===");
 
-      System.out.println("=== Initializing Database-Only Configuration ===");
+      logger.info("Initializing database-only configuration");
       DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
       beanFactory.setAllowCircularReferences(false);
       TronApplicationContext context = new TronApplicationContext(beanFactory);
       context.register(DefaultConfig.class);
       context.refresh();
-      System.out.println("Database-only context initialized successfully");
+      logger.info("Database context initialized successfully");
 
       // Check internal transaction configuration
       boolean saveInternalTx = CommonParameter.getInstance().isSaveInternalTx();
       boolean saveFeaturedInternalTx = CommonParameter.getInstance().isSaveFeaturedInternalTx();
-      System.out.println("=== Internal Transaction Configuration ===");
-      System.out.println("Save Internal Transactions: " + saveInternalTx);
-      System.out.println("Save Featured Internal Transactions: " + saveFeaturedInternalTx);
+      logger.info("Internal transaction configuration - Save: {}, SaveFeatured: {}", saveInternalTx, saveFeaturedInternalTx);
       if (!saveInternalTx) {
-        System.out.println("WARNING: Internal transactions are not being saved!");
-        System.out.println("To enable internal transaction saving, set 'vm.saveInternalTx = true' in config.conf");
-        System.out.println("Internal transactions will not appear in TransactionInfo output.");
+        logger.warn("Internal transactions are not being saved! Set 'vm.saveInternalTx = true' in config.conf to enable.");
       }
-
-      // Skip full application startup for database-only operation
-      // Application appT = ApplicationFactory.create(context);
-      // appT.startup();
-
-      // Print additional database status after initialization
-      System.out.println("=== Post-Initialization Database Status ===");
-      System.out.println("Application startup completed successfully");
 
       // Get ChainBaseManager and Wallet instances
       ChainBaseManager chainBaseManager = context.getBean(ChainBaseManager.class);
       Wallet wallet = context.getBean(Wallet.class);
 
-      System.out.println("ChainBaseManager initialized: " + (chainBaseManager != null));
-      System.out.println("Wallet initialized: " + (wallet != null));
+      logger.debug("ChainBaseManager initialized: {}", (chainBaseManager != null));
+      logger.debug("Wallet initialized: {}", (wallet != null));
 
       // Check if database stores are accessible
       try {
         boolean blockStoreEmpty = chainBaseManager.getBlockStore().isNotEmpty();
-        System.out.println("BlockStore is not empty: " + blockStoreEmpty);
+        logger.debug("BlockStore is not empty: {}", blockStoreEmpty);
       } catch (Exception e) {
-        System.out.println("Error checking BlockStore: " + e.getMessage());
+        logger.warn("Error checking BlockStore: {}", e.getMessage());
       }
 
       try {
         boolean dynamicPropsStoreAccessible = chainBaseManager.getDynamicPropertiesStore() != null;
-        System.out.println("DynamicPropertiesStore accessible: " + dynamicPropsStoreAccessible);
+        logger.debug("DynamicPropertiesStore accessible: {}", dynamicPropsStoreAccessible);
       } catch (Exception e) {
-        System.out.println("Error accessing DynamicPropertiesStore: " + e.getMessage());
+        logger.warn("Error accessing DynamicPropertiesStore: {}", e.getMessage());
       }
-
-      System.out.println("=== End Post-Initialization Database Status ===");
 
       // Get database block range using multiple approaches for robustness
       long lowestBlockNum = 0;
@@ -1287,7 +1181,7 @@ public class BlockTransactionPrinter {
 
         // Check if this is a lite node (doesn't have genesis block)
         boolean isLiteNode = chainBaseManager.isLiteNode();
-        System.out.println("Node type: " + (isLiteNode ? "Lite Node" : "Full Node"));
+        logger.info("Node type: {}", (isLiteNode ? "Lite Node" : "Full Node"));
 
         if (lowestBlockNum < 0) {
           // If getLowestBlockNum returns -1 or negative, try alternative approach
@@ -1304,22 +1198,19 @@ public class BlockTransactionPrinter {
           try {
             BlockCapsule genesisBlock = chainBaseManager.getGenesisBlock();
             if (genesisBlock != null) {
-              System.out.println("Genesis block found: " + genesisBlock.getBlockId().toString());
+              logger.debug("Genesis block found: {}", genesisBlock.getBlockId().toString());
               // For full nodes, lowest block should be 0 if genesis block exists
               lowestBlockNum = 0;
             }
           } catch (Exception genesisException) {
-            System.out.println("Warning: Could not access genesis block: " + genesisException.getMessage());
             logger.warn("Could not access genesis block: {}", genesisException.getMessage());
           }
         } else {
-          System.out.println("Lite node detected - genesis block (block 0) may not be available");
           logger.info("Lite node detected - lowest available block: {}", lowestBlockNum);
         }
 
       } catch (Exception e) {
-        System.out.println("Warning: Could not get lowest block number, using 0. Error: " + e.getMessage());
-        logger.warn("Could not get lowest block number: {}", e.getMessage());
+        logger.warn("Could not get lowest block number, using 0. Error: {}", e.getMessage());
         lowestBlockNum = 0;
       }
 
@@ -1489,7 +1380,7 @@ public class BlockTransactionPrinter {
         long currentEnd = Math.min(currentStart + batchSize - 1, endBlockNum);
         long limit = currentEnd - currentStart + 1;
 
-        System.out.println("Fetching blocks from " + currentStart + " to " + currentEnd);
+        logger.debug("Fetching blocks from {} to {}", currentStart, currentEnd);
 
         // Get blocks in the current batch
         List<BlockCapsule> blocks;
@@ -1502,11 +1393,9 @@ public class BlockTransactionPrinter {
             BlockCapsule genesisBlock = chainBaseManager.getGenesisBlock();
             if (genesisBlock != null && genesisBlock.getNum() == 0) {
               blocks.add(genesisBlock);
-              System.out.println("Successfully retrieved genesis block directly");
-              logger.info("Successfully retrieved genesis block directly");
+              logger.debug("Successfully retrieved genesis block directly");
             }
           } catch (Exception e) {
-            System.out.println("Could not get genesis block directly: " + e.getMessage());
             logger.warn("Could not get genesis block directly: {}", e.getMessage());
           }
 
@@ -1516,7 +1405,6 @@ public class BlockTransactionPrinter {
               List<BlockCapsule> additionalBlocks = chainBaseManager.getBlockStore().getLimitNumber(1, limit - 1);
               blocks.addAll(additionalBlocks);
             } catch (Exception e) {
-              System.out.println("Could not get blocks after genesis: " + e.getMessage());
               logger.warn("Could not get blocks after genesis: {}", e.getMessage());
             }
           }
@@ -1526,7 +1414,6 @@ public class BlockTransactionPrinter {
             try {
               blocks = chainBaseManager.getBlockStore().getLimitNumber(currentStart, limit);
             } catch (Exception e) {
-              System.out.println("Could not get blocks using normal approach: " + e.getMessage());
               logger.warn("Could not get blocks using normal approach: {}", e.getMessage());
               blocks = new ArrayList<>();
             }
@@ -1546,12 +1433,6 @@ public class BlockTransactionPrinter {
           long blockNum = block.getNum();
           String blockId = block.getBlockId().toString();
           long timestamp = block.getTimeStamp();
-          String formattedTime = dateFormat.format(new Date(timestamp));
-
-          System.out.println("\nBlock #" + blockNum + 
-                            " | ID: " + blockId + 
-                            " | Time: " + formattedTime +
-                            " | Transactions: " + block.getTransactions().size());
 
           // Process transactions in the block
           List<TransactionCapsule> transactions = block.getTransactions();
@@ -1559,9 +1440,7 @@ public class BlockTransactionPrinter {
           batchTransactions += transactions.size();
 
           // Log block processing details
-          String blockProcessMessage = String.format("Processing Block #%d with %d transactions",
-                                                    blockNum, transactions.size());
-          logger.debug(blockProcessMessage);
+          logger.debug("Processing Block #{} with {} transactions", blockNum, transactions.size());
 
           // Use concurrent processing for transactions within the block
           processTransactionsConcurrently(transactions, blockId, blockNum, timestamp,
@@ -1575,34 +1454,20 @@ public class BlockTransactionPrinter {
       // Log and print final statistics
       logFinalStatistics();
 
-      // Print summary
-      System.out.println("\n=== Summary ===");
-      System.out.println("Total blocks processed: " + totalBlocks);
-      System.out.println("Total transactions: " + totalTransactions);
-      double avgTxPerBlock = totalBlocks > 0 ? (double)totalTransactions / totalBlocks : 0;
-      System.out.println("Average transactions per block: " + String.format("%.2f", avgTxPerBlock));
-
       // Log summary to file
+      double avgTxPerBlock = totalBlocks > 0 ? (double)totalTransactions / totalBlocks : 0;
       String summaryMessage = String.format("Processing completed - Total blocks: %d, Total transactions: %d, Average tx/block: %.2f",
                                           totalBlocks, totalTransactions, avgTxPerBlock);
       logger.info(summaryMessage);
 
       // Shutdown the context
       context.close();
-      String completionMessage = "Transaction printing completed successfully.";
-      System.out.println("\n" + completionMessage);
-      logger.info(completionMessage);
-      System.out.println("=== Read-Only Database Query Completed - Exiting Program ===");
+      logger.info("Transaction printing completed successfully");
 
     } catch (NumberFormatException e) {
-      String errorMessage = "Error: Block numbers must be valid integers";
-      System.out.println(errorMessage);
-      logger.error(errorMessage, e);
+      logger.error("Block numbers must be valid integers", e);
     } catch (Exception e) {
-      String errorMessage = "Error: " + e.getMessage();
-      System.out.println(errorMessage);
-      logger.error(errorMessage, e);
-      e.printStackTrace();
+      logger.error("Error: " + e.getMessage(), e);
     } finally {
       // Shutdown thread pool gracefully
       shutdownThreadPool();
