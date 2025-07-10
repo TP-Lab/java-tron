@@ -48,6 +48,11 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 // Kafka imports
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -75,6 +80,7 @@ import org.apache.kafka.common.serialization.StringSerializer;
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f json
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f trigger -kb localhost:9092 -kt tron-transactions
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter -tx <txid> -f trigger -kb localhost:9092 -kt tron-transactions
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f trigger -threads 8
  * 
  * Options:
  *    -c <config_file>: Specify a custom configuration file
@@ -86,13 +92,15 @@ import org.apache.kafka.common.serialization.StringSerializer;
  *        trigger  - TransactionLogTrigger format (structured JSON with comprehensive transaction data)
  *    -kb <kafka_brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)
  *    -kt <kafka_topic>: Kafka topic name for sending trigger data
+ *    -threads <count>: Number of threads for concurrent transaction processing within each block (default: CPU cores * 2)
  *    (Other standard TRON node options are also supported)
  * 
  * The program will:
  * - Connect to the TRON blockchain using the specified configuration
  * - Retrieve blocks in the specified range (from startBlockNum to endBlockNum)
+ * - Process transactions within each block concurrently for improved performance
  * - Print detailed information about each block and its transactions
- * - Show a summary of the total blocks and transactions processed
+ * - Show a summary of the total blocks and transactions processed with performance statistics
  * 
  * Note: Make sure you have a running TRON node or a valid database directory
  * configured to access the blockchain data.
@@ -102,6 +110,11 @@ public class BlockTransactionPrinter {
 
   private static KafkaProducer<String, String> kafkaProducer = null;
 
+  // Concurrent processing configuration
+  private static ExecutorService transactionExecutor = null;
+  private static final int DEFAULT_THREAD_POOL_SIZE = Runtime.getRuntime().availableProcessors() * 2;
+  private static int threadPoolSize = DEFAULT_THREAD_POOL_SIZE;
+
   // Statistics tracking
   private static long startTime = 0;
   private static long totalBlocksProcessed = 0;
@@ -109,6 +122,56 @@ public class BlockTransactionPrinter {
   private static long lastStatsTime = 0;
   private static long lastBlocksProcessed = 0;
   private static long lastTransactionsProcessed = 0;
+
+  /**
+   * Initialize thread pool for concurrent transaction processing
+   */
+  private static void initializeThreadPool(int poolSize) {
+    if (transactionExecutor != null) {
+      return; // Already initialized
+    }
+
+    threadPoolSize = poolSize;
+    transactionExecutor = Executors.newFixedThreadPool(threadPoolSize);
+    String threadPoolMessage = "Transaction processing thread pool initialized with " + threadPoolSize + " threads";
+    System.out.println(threadPoolMessage);
+    logger.info(threadPoolMessage);
+  }
+
+  /**
+   * Shutdown thread pool gracefully
+   */
+  private static void shutdownThreadPool() {
+    if (transactionExecutor != null) {
+      try {
+        System.out.println("Shutting down transaction processing thread pool...");
+        transactionExecutor.shutdown();
+
+        // Wait for existing tasks to complete
+        if (!transactionExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+          System.out.println("Thread pool did not terminate gracefully, forcing shutdown...");
+          transactionExecutor.shutdownNow();
+
+          // Wait a bit more for tasks to respond to being cancelled
+          if (!transactionExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+            System.err.println("Thread pool did not terminate after forced shutdown");
+            logger.error("Thread pool did not terminate after forced shutdown");
+          }
+        }
+
+        String shutdownMessage = "Transaction processing thread pool shut down successfully";
+        System.out.println(shutdownMessage);
+        logger.info(shutdownMessage);
+      } catch (InterruptedException e) {
+        System.err.println("Thread pool shutdown interrupted: " + e.getMessage());
+        logger.error("Thread pool shutdown interrupted", e);
+        transactionExecutor.shutdownNow();
+        Thread.currentThread().interrupt();
+      } finally {
+        transactionExecutor = null;
+      }
+    }
+  }
 
   /**
    * Initialize statistics tracking
@@ -744,6 +807,178 @@ public class BlockTransactionPrinter {
   }
 
   /**
+   * Process transactions in a block concurrently
+   */
+  private static void processTransactionsConcurrently(List<TransactionCapsule> transactions,
+      String blockId, long blockNum, long timestamp, String outputFormat,
+      boolean useKafka, String kafkaTopic, Wallet wallet) {
+
+    if (transactions.isEmpty()) {
+      System.out.println("  No transactions in this block");
+      return;
+    }
+
+    System.out.println("  Processing " + transactions.size() + " transactions concurrently...");
+
+    // Create a list to hold all the CompletableFuture tasks
+    List<CompletableFuture<Void>> futures = new ArrayList<>();
+    AtomicInteger processedCount = new AtomicInteger(0);
+
+    // Process each transaction concurrently
+    for (int i = 0; i < transactions.size(); i++) {
+      final int transactionIndex = i;
+      final TransactionCapsule trx = transactions.get(i);
+
+      CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+        try {
+          processTransaction(trx, transactionIndex, blockId, blockNum, timestamp,
+                           outputFormat, useKafka, kafkaTopic, wallet);
+
+          int completed = processedCount.incrementAndGet();
+          if (completed % 10 == 0 || completed == transactions.size()) {
+            System.out.println("    Processed " + completed + "/" + transactions.size() + " transactions");
+          }
+        } catch (Exception e) {
+          String errorMessage = "Error processing transaction " + (transactionIndex + 1) +
+                               " in block " + blockNum + ": " + e.getMessage();
+          System.err.println("    " + errorMessage);
+          logger.error(errorMessage, e);
+        }
+      }, transactionExecutor);
+
+      futures.add(future);
+    }
+
+    // Wait for all transactions to complete
+    try {
+      CompletableFuture<Void> allFutures = CompletableFuture.allOf(
+          futures.toArray(new CompletableFuture[0]));
+      allFutures.get(); // This will block until all transactions are processed
+
+      System.out.println("  All " + transactions.size() + " transactions processed successfully");
+    } catch (Exception e) {
+      String errorMessage = "Error waiting for concurrent transaction processing to complete: " + e.getMessage();
+      System.err.println("  " + errorMessage);
+      logger.error(errorMessage, e);
+    }
+  }
+
+  /**
+   * Process a single transaction (used by concurrent processing)
+   */
+  private static void processTransaction(TransactionCapsule trx, int transactionIndex,
+      String blockId, long blockNum, long timestamp, String outputFormat,
+      boolean useKafka, String kafkaTopic, Wallet wallet) {
+
+    String txId = trx.getTransactionId().toString();
+    ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
+
+    // Synchronize console output to prevent interleaved output
+    synchronized (System.out) {
+      System.out.println("  Transaction #" + (transactionIndex + 1) + " (Thread: " +
+                        Thread.currentThread().getName() + "):");
+    }
+
+    // Get transaction info using wallet.getTransactionInfoById
+    TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
+
+    // Get transaction using wallet.getTransactionById (walletsolidity/gettransactionbyid equivalent)
+    Transaction transaction = wallet.getTransactionById(txIdBytes);
+
+    // For genesis block or other special cases, if wallet methods return null,
+    // try to get transaction directly from the TransactionCapsule
+    if (transaction == null && trx != null) {
+      try {
+        transaction = trx.getInstance();
+        synchronized (System.out) {
+          System.out.println("    Retrieved transaction directly from TransactionCapsule");
+        }
+        logger.debug("Retrieved transaction directly from TransactionCapsule for ID: {}", txId);
+
+        // Also get the correct transaction ID from TransactionCapsule
+        String correctTxId = trx.getTransactionId().toString();
+        if (!correctTxId.equals(txId)) {
+          synchronized (System.out) {
+            System.out.println("    Note: Correct transaction ID from TransactionCapsule: " + correctTxId);
+            System.out.println("    Original ID from block: " + txId);
+          }
+          logger.info("Transaction ID mismatch - Correct: {}, Original: {}", correctTxId, txId);
+          // Update txId to use the correct one
+          txId = correctTxId;
+        }
+      } catch (Exception e) {
+        synchronized (System.out) {
+          System.out.println("    Could not get transaction from TransactionCapsule: " + e.getMessage());
+        }
+        logger.warn("Could not get transaction from TransactionCapsule for ID {}: {}", txId, e.getMessage());
+      }
+    }
+
+    // Handle different output formats
+    if ("trigger".equals(outputFormat)) {
+      // Use TransactionLogTrigger format with optional Kafka sending
+      String kafkaTopicToUse = useKafka ? kafkaTopic : null;
+      String kafkaKey = txId; // Use transaction ID as Kafka key
+
+      // Log if transaction data is missing
+      if (transactionInfo == null && transaction == null) {
+        logger.warn("Missing transaction data for ID {} in block {} - this may be normal for genesis block transactions", txId, blockNum);
+        synchronized (System.out) {
+          System.out.println("    Warning: No transaction data available from wallet methods");
+          if (blockNum == 0) {
+            System.out.println("    Note: This is normal for genesis block transactions");
+          }
+        }
+      }
+
+      printTransactionLogTrigger(transactionInfo, transaction, blockId, blockNum, timestamp, transactionIndex,
+          "Transaction #" + (transactionIndex + 1) + " (TransactionLogTrigger Format)", kafkaTopicToUse, kafkaKey, trx);
+    } else {
+      // Use traditional formats - synchronize output to prevent interleaving
+      synchronized (System.out) {
+        if (transactionInfo != null) {
+          // Convert log addresses to TRON addresses while preserving internal transactions
+          List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
+          TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
+              .clearLog()
+              .addAllLog(newLogList)
+              .build();
+
+          System.out.println("    === Transaction Info (wallet/gettransactioninfobyid) ===");
+
+          if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
+            System.out.println("    --- JSON Format ---");
+            System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
+          }
+
+          if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
+            System.out.println("    --- Protobuf Format ---");
+            System.out.println(transactionInfoWithConvertedLogs.toString());
+          }
+        } else {
+          System.out.println("    No transaction info found for ID: " + txId);
+        }
+
+        if (transaction != null) {
+          System.out.println("    === Transaction Details (walletsolidity/gettransactionbyid) ===");
+
+          if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
+            System.out.println("    --- JSON Format ---");
+            System.out.println(JsonFormat.printToString(transaction, true));
+          }
+
+          if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
+            System.out.println("    --- Protobuf Format ---");
+            System.out.println(transaction.toString());
+          }
+        } else {
+          System.out.println("    No transaction details found for ID: " + txId);
+        }
+      }
+    }
+  }
+
+  /**
    * Main method to run the block transaction printer.
    * 
    * This method initializes the TRON environment, connects to the blockchain,
@@ -791,6 +1026,7 @@ public class BlockTransactionPrinter {
       System.out.println("  -f <format>: Output format (json|protobuf|both|trigger), default: both");
       System.out.println("  -kb <brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)");
       System.out.println("  -kt <topic>: Kafka topic name for sending trigger data (requires -kb)");
+      System.out.println("  -threads <count>: Number of threads for concurrent transaction processing, default: " + DEFAULT_THREAD_POOL_SIZE);
       logger.error(usageMessage);
       return;
     }
@@ -805,9 +1041,11 @@ public class BlockTransactionPrinter {
       }
     }
 
-    // Parse Kafka options
+    // Parse Kafka options and thread pool size
     String kafkaBrokers = null;
     String kafkaTopic = null;
+    int customThreadPoolSize = DEFAULT_THREAD_POOL_SIZE;
+
     for (int i = 0; i < args.length - 1; i++) {
       if ("-kb".equals(args[i])) {
         kafkaBrokers = args[i + 1];
@@ -815,6 +1053,19 @@ public class BlockTransactionPrinter {
       } else if ("-kt".equals(args[i])) {
         kafkaTopic = args[i + 1];
         System.out.println("Kafka topic set to: " + kafkaTopic);
+      } else if ("-threads".equals(args[i])) {
+        try {
+          customThreadPoolSize = Integer.parseInt(args[i + 1]);
+          if (customThreadPoolSize <= 0) {
+            System.out.println("Error: Thread pool size must be positive. Using default: " + DEFAULT_THREAD_POOL_SIZE);
+            customThreadPoolSize = DEFAULT_THREAD_POOL_SIZE;
+          } else {
+            System.out.println("Thread pool size set to: " + customThreadPoolSize);
+          }
+        } catch (NumberFormatException e) {
+          System.out.println("Error: Invalid thread pool size. Using default: " + DEFAULT_THREAD_POOL_SIZE);
+          customThreadPoolSize = DEFAULT_THREAD_POOL_SIZE;
+        }
       }
     }
 
@@ -872,6 +1123,9 @@ public class BlockTransactionPrinter {
       // Initialize statistics tracking
       initializeStatistics();
 
+      // Initialize thread pool for concurrent transaction processing
+      initializeThreadPool(customThreadPoolSize);
+
       // Initialize Kafka if configured
       if (useKafka) {
         initKafkaProducer(kafkaBrokers);
@@ -888,10 +1142,10 @@ public class BlockTransactionPrinter {
       String[] configArgs;
       int configStartIndex = isTransactionMode ? 2 : 2; // Both modes skip first 2 args
 
-      // Filter out custom parameters (-f, -kb, -kt) and their values since they're not TRON node parameters
+      // Filter out custom parameters (-f, -kb, -kt, -threads) and their values since they're not TRON node parameters
       List<String> filteredArgs = new ArrayList<>();
       for (int i = configStartIndex; i < args.length; i++) {
-        if ("-f".equals(args[i]) || "-kb".equals(args[i]) || "-kt".equals(args[i])) {
+        if ("-f".equals(args[i]) || "-kb".equals(args[i]) || "-kt".equals(args[i]) || "-threads".equals(args[i])) {
           // Skip custom parameter and its value
           i++; // Skip the next argument (parameter value)
         } else {
@@ -1309,105 +1563,9 @@ public class BlockTransactionPrinter {
                                                     blockNum, transactions.size());
           logger.debug(blockProcessMessage);
 
-          if (transactions.isEmpty()) {
-            System.out.println("  No transactions in this block");
-          } else {
-            for (int i = 0; i < transactions.size(); i++) {
-              TransactionCapsule trx = transactions.get(i);
-              String txId = trx.getTransactionId().toString();
-              ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
-
-              System.out.println("  Transaction #" + (i + 1) + ":");
-
-              // Get transaction info using wallet.getTransactionInfoById
-              TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
-
-              // Get transaction using wallet.getTransactionById (walletsolidity/gettransactionbyid equivalent)
-              Transaction transaction = wallet.getTransactionById(txIdBytes);
-
-              // For genesis block or other special cases, if wallet methods return null,
-              // try to get transaction directly from the TransactionCapsule
-              if (transaction == null && trx != null) {
-                try {
-                  transaction = trx.getInstance();
-                  System.out.println("    Retrieved transaction directly from TransactionCapsule");
-                  logger.debug("Retrieved transaction directly from TransactionCapsule for ID: {}", txId);
-
-                  // Also get the correct transaction ID from TransactionCapsule
-                  String correctTxId = trx.getTransactionId().toString();
-                  if (!correctTxId.equals(txId)) {
-                    System.out.println("    Note: Correct transaction ID from TransactionCapsule: " + correctTxId);
-                    System.out.println("    Original ID from block: " + txId);
-                    logger.info("Transaction ID mismatch - Correct: {}, Original: {}", correctTxId, txId);
-                    // Update txId to use the correct one
-                    txId = correctTxId;
-                  }
-                } catch (Exception e) {
-                  System.out.println("    Could not get transaction from TransactionCapsule: " + e.getMessage());
-                  logger.warn("Could not get transaction from TransactionCapsule for ID {}: {}", txId, e.getMessage());
-                }
-              }
-
-              // Handle different output formats
-              if ("trigger".equals(outputFormat)) {
-                // Use TransactionLogTrigger format with optional Kafka sending
-                String kafkaTopicToUse = useKafka ? kafkaTopic : null;
-                String kafkaKey = txId; // Use transaction ID as Kafka key
-
-                // Log if transaction data is missing
-                if (transactionInfo == null && transaction == null) {
-                  logger.warn("Missing transaction data for ID {} in block {} - this may be normal for genesis block transactions", txId, blockNum);
-                  System.out.println("    Warning: No transaction data available from wallet methods");
-                  if (blockNum == 0) {
-                    System.out.println("    Note: This is normal for genesis block transactions");
-                  }
-                }
-
-                printTransactionLogTrigger(transactionInfo, transaction, blockId, blockNum, timestamp, i,
-                    "Transaction #" + (i + 1) + " (TransactionLogTrigger Format)", kafkaTopicToUse, kafkaKey, trx);
-              } else {
-                // Use traditional formats
-                if (transactionInfo != null) {
-                  // Convert log addresses to TRON addresses while preserving internal transactions
-                  List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
-                  TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
-                      .clearLog()
-                      .addAllLog(newLogList)
-                      .build();
-
-                  System.out.println("    === Transaction Info (wallet/gettransactioninfobyid) ===");
-
-                  if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
-                    System.out.println("    --- JSON Format ---");
-                    System.out.println(JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
-                  }
-
-                  if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
-                    System.out.println("    --- Protobuf Format ---");
-                    System.out.println(transactionInfoWithConvertedLogs.toString());
-                  }
-                } else {
-                  System.out.println("    No transaction info found for ID: " + txId);
-                }
-
-                if (transaction != null) {
-                  System.out.println("    === Transaction Details (walletsolidity/gettransactionbyid) ===");
-
-                  if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
-                    System.out.println("    --- JSON Format ---");
-                    System.out.println(JsonFormat.printToString(transaction, true));
-                  }
-
-                  if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
-                    System.out.println("    --- Protobuf Format ---");
-                    System.out.println(transaction.toString());
-                  }
-                } else {
-                  System.out.println("    No transaction details found for ID: " + txId);
-                }
-              }
-            }
-          }
+          // Use concurrent processing for transactions within the block
+          processTransactionsConcurrently(transactions, blockId, blockNum, timestamp,
+                                         outputFormat, useKafka, kafkaTopic, wallet);
         }
 
         // Update statistics after processing each batch
@@ -1446,6 +1604,9 @@ public class BlockTransactionPrinter {
       logger.error(errorMessage, e);
       e.printStackTrace();
     } finally {
+      // Shutdown thread pool gracefully
+      shutdownThreadPool();
+
       // Close Kafka producer if it was initialized
       closeKafkaProducer();
     }
