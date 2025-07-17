@@ -575,10 +575,18 @@ public class BlockTransactionPrinter {
 
       // Directly use the protobuf toString() method to get complete structure
       trigger.setTxResult(txResult.toString());
+      logger.debug("Found Transaction.Result in transaction data: {}", txResult.toString());
 
       // Also update fee if Transaction.Result has a different fee value
-      if (txResult.hasFee() && txResult.getFee() > 0) {
+      if (txResult.getFee() > 0) {
         trigger.setFee(txResult.getFee());
+      }
+    } else {
+      // Log when Transaction.Result is not available
+      if (transaction != null) {
+        logger.debug("Transaction.Result not available - transaction.getRetCount(): {}", transaction.getRetCount());
+      } else {
+        logger.debug("Transaction.Result not available - transaction is null");
       }
     }
 
