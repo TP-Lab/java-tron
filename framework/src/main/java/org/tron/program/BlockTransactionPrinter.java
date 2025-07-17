@@ -122,6 +122,8 @@ public class BlockTransactionPrinter {
   private static long lastStatsTime = 0;
   private static long lastBlocksProcessed = 0;
   private static long lastTransactionsProcessed = 0;
+  private static long startBlockNumber = 0;
+  private static long currentBlockNumber = 0;
 
   /**
    * Initialize thread pool for concurrent transaction processing
@@ -171,22 +173,25 @@ public class BlockTransactionPrinter {
   /**
    * Initialize statistics tracking
    */
-  private static void initializeStatistics() {
+  private static void initializeStatistics(long startBlock) {
     startTime = System.currentTimeMillis();
     lastStatsTime = startTime;
     totalBlocksProcessed = 0;
     totalTransactionsProcessed = 0;
     lastBlocksProcessed = 0;
     lastTransactionsProcessed = 0;
-    logger.info("Statistics tracking initialized");
+    startBlockNumber = startBlock;
+    currentBlockNumber = startBlock;
+    logger.info("Statistics tracking initialized - Starting from block {}", startBlock);
   }
 
   /**
    * Update and log statistics
    */
-  private static void updateStatistics(int blocksProcessed, int transactionsProcessed) {
+  private static void updateStatistics(int blocksProcessed, int transactionsProcessed, long latestBlockNumber) {
     totalBlocksProcessed += blocksProcessed;
     totalTransactionsProcessed += transactionsProcessed;
+    currentBlockNumber = latestBlockNumber;
 
     long currentTime = System.currentTimeMillis();
     long timeSinceLastStats = currentTime - lastStatsTime;
@@ -208,9 +213,10 @@ public class BlockTransactionPrinter {
       double intervalTransactionsPerSecond = intervalTimeSeconds > 0 ? intervalTransactions / intervalTimeSeconds : 0;
 
       String statsMessage = String.format(
-        "Processing Statistics - Total: %d blocks, %d transactions in %.1fs " +
+        "Processing Statistics - Current Block: %d (Started from: %d) | Total: %d blocks, %d transactions in %.1fs " +
         "(%.2f blocks/s, %.2f tx/s) | Recent: %d blocks, %d transactions in %.1fs " +
         "(%.2f blocks/s, %.2f tx/s)",
+        currentBlockNumber, startBlockNumber,
         totalBlocksProcessed, totalTransactionsProcessed, totalTimeSeconds,
         overallBlocksPerSecond, overallTransactionsPerSecond,
         intervalBlocks, intervalTransactions, intervalTimeSeconds,
@@ -237,8 +243,9 @@ public class BlockTransactionPrinter {
     double overallTransactionsPerSecond = totalTimeSeconds > 0 ? totalTransactionsProcessed / totalTimeSeconds : 0;
 
     String finalStatsMessage = String.format(
-      "Final Statistics - Processed %d blocks and %d transactions in %.1f seconds " +
+      "Final Statistics - Block Range: %d to %d | Processed %d blocks and %d transactions in %.1f seconds " +
       "(Average: %.2f blocks/s, %.2f transactions/s)",
+      startBlockNumber, currentBlockNumber,
       totalBlocksProcessed, totalTransactionsProcessed, totalTimeSeconds,
       overallBlocksPerSecond, overallTransactionsPerSecond
     );
@@ -1061,7 +1068,7 @@ public class BlockTransactionPrinter {
       }
 
       // Initialize statistics tracking
-      initializeStatistics();
+      initializeStatistics(startBlockNum);
 
       // Initialize thread pool for concurrent transaction processing
       initializeThreadPool(customThreadPoolSize);
@@ -1430,12 +1437,14 @@ public class BlockTransactionPrinter {
 
         // Track batch processing for statistics
         int batchTransactions = 0;
+        long lastBlockInBatch = currentStart; // Default to current start
 
         // Process each block
         for (BlockCapsule block : blocks) {
           long blockNum = block.getNum();
           String blockId = block.getBlockId().toString();
           long timestamp = block.getTimeStamp();
+          lastBlockInBatch = blockNum; // Track the last block number in this batch
 
           // Process transactions in the block
           List<TransactionCapsule> transactions = block.getTransactions();
@@ -1451,7 +1460,7 @@ public class BlockTransactionPrinter {
         }
 
         // Update statistics after processing each batch
-        updateStatistics(blocks.size(), batchTransactions);
+        updateStatistics(blocks.size(), batchTransactions, lastBlockInBatch);
       }
 
       // Log and print final statistics
