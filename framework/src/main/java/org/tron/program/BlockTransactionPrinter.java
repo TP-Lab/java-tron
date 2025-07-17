@@ -268,6 +268,9 @@ public class BlockTransactionPrinter {
       props.put(ProducerConfig.LINGER_MS_CONFIG, 1);
       props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, 33554432);
 
+      // Enable gzip compression for better network efficiency
+      props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "gzip");
+
       kafkaProducer = new KafkaProducer<>(props);
       String kafkaInitMessage = "Kafka producer initialized successfully with brokers: " + kafkaBrokers;
       logger.info(kafkaInitMessage);
@@ -296,7 +299,7 @@ public class BlockTransactionPrinter {
           String errorMessage = "Failed to send message to Kafka: " + exception.getMessage();
           logger.error(errorMessage, exception);
         } else {
-          logger.debug("Message sent to Kafka topic '{}' at offset {}", topic, metadata.offset());
+          // logger.debug("Message sent to Kafka topic '{}' at offset {}", topic, metadata.offset());
         }
       });
     } catch (Exception e) {
@@ -395,7 +398,7 @@ public class BlockTransactionPrinter {
 
     // For genesis block transactions, we might only have transaction data without transactionInfo
     if (transactionInfo == null && transaction != null) {
-      logger.debug("Creating TransactionLogTrigger from transaction data only for block {}", blockNumber);
+      // logger.debug("Creating TransactionLogTrigger from transaction data only for block {}", blockNumber);
     }
 
     try {
@@ -416,7 +419,7 @@ public class BlockTransactionPrinter {
               !trigger.getTransactionId().isEmpty() &&
               !trigger.getTransactionId().startsWith("UNKNOWN_TX_")) {
             sendToKafka(kafkaTopic, key, jsonOutput);
-            logger.debug("TransactionLogTrigger sent to Kafka topic: {} with key: {}", kafkaTopic, key);
+            // logger.debug("TransactionLogTrigger sent to Kafka topic: {} with key: {}", kafkaTopic, key);
             sentToKafka = true;
           } else {
             logger.warn("Skipped Kafka send due to invalid transaction ID: {}", trigger.getTransactionId());
