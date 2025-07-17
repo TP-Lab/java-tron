@@ -573,48 +573,11 @@ public class BlockTransactionPrinter {
     if (transaction != null && transaction.getRetCount() > 0) {
       Transaction.Result txResult = transaction.getRet(0);
 
-      // Override txResult with detailed Transaction.Result information
-      StringBuilder txResultBuilder = new StringBuilder();
-      txResultBuilder.append("fee:").append(txResult.getFee());
-      txResultBuilder.append(",ret:").append(txResult.getRet().toString());
-      txResultBuilder.append(",contractRet:").append(txResult.getContractRet().toString());
-
-      // Add additional fields if they have values
-      if (!txResult.getAssetIssueID().isEmpty()) {
-        txResultBuilder.append(",assetIssueID:").append(txResult.getAssetIssueID());
-      }
-      if (txResult.getWithdrawAmount() > 0) {
-        txResultBuilder.append(",withdrawAmount:").append(txResult.getWithdrawAmount());
-      }
-      if (txResult.getUnfreezeAmount() > 0) {
-        txResultBuilder.append(",unfreezeAmount:").append(txResult.getUnfreezeAmount());
-      }
-      if (txResult.getExchangeReceivedAmount() > 0) {
-        txResultBuilder.append(",exchangeReceivedAmount:").append(txResult.getExchangeReceivedAmount());
-      }
-      if (txResult.getExchangeInjectAnotherAmount() > 0) {
-        txResultBuilder.append(",exchangeInjectAnotherAmount:").append(txResult.getExchangeInjectAnotherAmount());
-      }
-      if (txResult.getExchangeWithdrawAnotherAmount() > 0) {
-        txResultBuilder.append(",exchangeWithdrawAnotherAmount:").append(txResult.getExchangeWithdrawAnotherAmount());
-      }
-      if (txResult.getExchangeId() > 0) {
-        txResultBuilder.append(",exchangeId:").append(txResult.getExchangeId());
-      }
-      if (txResult.getShieldedTransactionFee() > 0) {
-        txResultBuilder.append(",shieldedTransactionFee:").append(txResult.getShieldedTransactionFee());
-      }
-      if (!txResult.getOrderId().isEmpty()) {
-        txResultBuilder.append(",orderId:").append(Hex.toHexString(txResult.getOrderId().toByteArray()));
-      }
-      if (txResult.getOrderDetailsCount() > 0) {
-        txResultBuilder.append(",orderDetailsCount:").append(txResult.getOrderDetailsCount());
-      }
-
-      trigger.setTxResult(txResultBuilder.toString());
+      // Directly use the protobuf toString() method to get complete structure
+      trigger.setTxResult(txResult.toString());
 
       // Also update fee if Transaction.Result has a different fee value
-      if (txResult.getFee() > 0) {
+      if (txResult.hasFee() && txResult.getFee() > 0) {
         trigger.setFee(txResult.getFee());
       }
     }
