@@ -567,28 +567,69 @@ public class BlockTransactionPrinter {
 
       // Total fee
       trigger.setFee(transactionInfo.getFee());
+
+      // Use protobuf encoding for txResult - create a Transaction.Result structure
+      try {
+        Transaction.Result.Builder resultBuilder = Transaction.Result.newBuilder();
+
+        // Set basic fields
+        resultBuilder.setFee(transactionInfo.getFee());
+
+        // Map TransactionInfo.code to Transaction.Result.code
+        if (transactionInfo.getResult() == TransactionInfo.code.SUCESS) {
+          resultBuilder.setRet(Transaction.Result.code.SUCESS);
+        } else {
+          resultBuilder.setRet(Transaction.Result.code.FAILED);
+        }
+
+        // Set default contract result
+        resultBuilder.setContractRet(Transaction.Result.contractResult.SUCCESS);
+
+        // Add withdraw and unfreeze amounts if available
+        if (transactionInfo.getWithdrawAmount() > 0) {
+          resultBuilder.setWithdrawAmount(transactionInfo.getWithdrawAmount());
+        }
+        if (transactionInfo.getUnfreezeAmount() > 0) {
+          resultBuilder.setUnfreezeAmount(transactionInfo.getUnfreezeAmount());
+        }
+
+        // Add exchange-related amounts if available
+        if (transactionInfo.getExchangeReceivedAmount() > 0) {
+          resultBuilder.setExchangeReceivedAmount(transactionInfo.getExchangeReceivedAmount());
+        }
+        if (transactionInfo.getExchangeInjectAnotherAmount() > 0) {
+          resultBuilder.setExchangeInjectAnotherAmount(transactionInfo.getExchangeInjectAnotherAmount());
+        }
+        if (transactionInfo.getExchangeWithdrawAnotherAmount() > 0) {
+          resultBuilder.setExchangeWithdrawAnotherAmount(transactionInfo.getExchangeWithdrawAnotherAmount());
+        }
+        if (transactionInfo.getExchangeId() > 0) {
+          resultBuilder.setExchangeId(transactionInfo.getExchangeId());
+        }
+
+        // Add asset issue ID if available
+        if (!transactionInfo.getAssetIssueID().isEmpty()) {
+          resultBuilder.setAssetIssueID(transactionInfo.getAssetIssueID());
+        }
+
+        // Add shielded transaction fee if available
+        if (transactionInfo.getShieldedTransactionFee() > 0) {
+          resultBuilder.setShieldedTransactionFee(transactionInfo.getShieldedTransactionFee());
+        }
+
+        // Build the protobuf result and use its toString() method for structured output
+        Transaction.Result txResult = resultBuilder.build();
+        trigger.setTxResult(txResult.toString());
+
+      } catch (Exception e) {
+        logger.warn("Failed to create protobuf Transaction.Result, falling back to simple format: {}", e.getMessage());
+        // Fallback to simple format if protobuf creation fails
+        trigger.setTxResult("fee:" + transactionInfo.getFee() + ",result:" + transactionInfo.getResult().toString());
+      }
     }
 
-    // Extract detailed Transaction.Result information if available
-    if (transaction != null && transaction.getRetCount() > 0) {
-      Transaction.Result txResult = transaction.getRet(0);
-
-      // Directly use the protobuf toString() method to get complete structure
-      trigger.setTxResult(txResult.toString());
-      logger.debug("Found Transaction.Result in transaction data: {}", txResult.toString());
-
-      // Also update fee if Transaction.Result has a different fee value
-      if (txResult.getFee() > 0) {
-        trigger.setFee(txResult.getFee());
-      }
-    } else {
-      // Log when Transaction.Result is not available
-      if (transaction != null) {
-        logger.debug("Transaction.Result not available - transaction.getRetCount(): {}", transaction.getRetCount());
-      } else {
-        logger.debug("Transaction.Result not available - transaction is null");
-      }
-    }
+    // Note: Transaction.Result is not available in database-stored transactions (getRetCount() = 0)
+    // All execution result information is available in TransactionInfo instead
 
     if (transactionInfo != null) {
 
