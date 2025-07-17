@@ -567,6 +567,59 @@ public class BlockTransactionPrinter {
 
       // Total fee
       trigger.setFee(transactionInfo.getFee());
+    }
+
+    // Extract detailed Transaction.Result information if available
+    if (transaction != null && transaction.getRetCount() > 0) {
+      Transaction.Result txResult = transaction.getRet(0);
+
+      // Override txResult with detailed Transaction.Result information
+      StringBuilder txResultBuilder = new StringBuilder();
+      txResultBuilder.append("fee:").append(txResult.getFee());
+      txResultBuilder.append(",ret:").append(txResult.getRet().toString());
+      txResultBuilder.append(",contractRet:").append(txResult.getContractRet().toString());
+
+      // Add additional fields if they have values
+      if (!txResult.getAssetIssueID().isEmpty()) {
+        txResultBuilder.append(",assetIssueID:").append(txResult.getAssetIssueID());
+      }
+      if (txResult.getWithdrawAmount() > 0) {
+        txResultBuilder.append(",withdrawAmount:").append(txResult.getWithdrawAmount());
+      }
+      if (txResult.getUnfreezeAmount() > 0) {
+        txResultBuilder.append(",unfreezeAmount:").append(txResult.getUnfreezeAmount());
+      }
+      if (txResult.getExchangeReceivedAmount() > 0) {
+        txResultBuilder.append(",exchangeReceivedAmount:").append(txResult.getExchangeReceivedAmount());
+      }
+      if (txResult.getExchangeInjectAnotherAmount() > 0) {
+        txResultBuilder.append(",exchangeInjectAnotherAmount:").append(txResult.getExchangeInjectAnotherAmount());
+      }
+      if (txResult.getExchangeWithdrawAnotherAmount() > 0) {
+        txResultBuilder.append(",exchangeWithdrawAnotherAmount:").append(txResult.getExchangeWithdrawAnotherAmount());
+      }
+      if (txResult.getExchangeId() > 0) {
+        txResultBuilder.append(",exchangeId:").append(txResult.getExchangeId());
+      }
+      if (txResult.getShieldedTransactionFee() > 0) {
+        txResultBuilder.append(",shieldedTransactionFee:").append(txResult.getShieldedTransactionFee());
+      }
+      if (!txResult.getOrderId().isEmpty()) {
+        txResultBuilder.append(",orderId:").append(Hex.toHexString(txResult.getOrderId().toByteArray()));
+      }
+      if (txResult.getOrderDetailsCount() > 0) {
+        txResultBuilder.append(",orderDetailsCount:").append(txResult.getOrderDetailsCount());
+      }
+
+      trigger.setTxResult(txResultBuilder.toString());
+
+      // Also update fee if Transaction.Result has a different fee value
+      if (txResult.getFee() > 0) {
+        trigger.setFee(txResult.getFee());
+      }
+    }
+
+    if (transactionInfo != null) {
 
       // Fee and energy information
       if (transactionInfo.hasReceipt()) {
@@ -779,7 +832,11 @@ public class BlockTransactionPrinter {
           trigger.setFromAddress(StringUtil.encode58Check(transferAssetContract.getOwnerAddress().toByteArray()));
           trigger.setToAddress(StringUtil.encode58Check(transferAssetContract.getToAddress().toByteArray()));
           trigger.setAssetAmount(transferAssetContract.getAmount());
-          trigger.setAssetName(transferAssetContract.getAssetName().toStringUtf8());
+
+          // Get TRC10 token ID - the asset_name field contains token ID when ALLOW_SAME_TOKEN_NAME is active
+          // For TRC10 tokens, we want the token ID, not the name
+          String tokenId = transferAssetContract.getAssetName().toStringUtf8();
+          trigger.setAssetName(tokenId);
           break;
         case TriggerSmartContract:
           org.tron.protos.contract.SmartContractOuterClass.TriggerSmartContract triggerContract =
