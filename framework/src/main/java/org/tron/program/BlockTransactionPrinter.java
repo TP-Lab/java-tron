@@ -1385,7 +1385,7 @@ public class BlockTransactionPrinter {
       SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
       // Process blocks in batches to avoid memory issues
-      long batchSize = 100;
+      long batchSize = 1000;
       for (long currentStart = startBlockNum; currentStart <= endBlockNum; currentStart += batchSize) {
         long currentEnd = Math.min(currentStart + batchSize - 1, endBlockNum);
         long limit = currentEnd - currentStart + 1;
