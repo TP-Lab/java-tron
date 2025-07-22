@@ -573,61 +573,29 @@ public class BlockTransactionPrinter {
       }
 
       // Authority information (auths field) - contains permission information
-      // Note: auths field might not be available in all TRON versions or might be empty in most transactions
+      // Note: auths field is rarely used in normal transactions, most permission info is in contract.Permission_id
       try {
-        if (transaction.getRawData().getAuthsCount() > 0) {
-          trigger.getExtMap().put("authsCount", (long) transaction.getRawData().getAuthsCount());
+        // Try to access auths field, but don't fail if it's not available
+        java.lang.reflect.Method getAuthsCountMethod = transaction.getRawData().getClass().getMethod("getAuthsCount");
+        int authsCount = (Integer) getAuthsCountMethod.invoke(transaction.getRawData());
 
-          List<String> authsList = new ArrayList<>();
-          for (int i = 0; i < transaction.getRawData().getAuthsCount(); i++) {
-            org.tron.protos.Protocol.authority auth = transaction.getRawData().getAuths(i);
+        if (authsCount > 0) {
+          trigger.getExtMap().put("authsCount", (long) authsCount);
+          logger.debug("Transaction {} has {} auths entries", trigger.getTransactionId(), authsCount);
 
-            StringBuilder authInfo = new StringBuilder();
-            if (auth.hasAccount()) {
-              if (!auth.getAccount().getName().isEmpty()) {
-                authInfo.append("name:").append(auth.getAccount().getName().toStringUtf8()).append(",");
-              }
-              if (!auth.getAccount().getAddress().isEmpty()) {
-                authInfo.append("address:").append(StringUtil.encode58Check(auth.getAccount().getAddress().toByteArray())).append(",");
-              }
-            }
-            if (!auth.getPermissionName().isEmpty()) {
-              String permissionName = auth.getPermissionName().toStringUtf8();
-              authInfo.append("permission:").append(permissionName);
-
-              // Map permission name to ID
-              long permissionId = 2; // Default to active permission
-              if ("owner".equals(permissionName)) {
-                permissionId = 0;
-              } else if ("witness".equals(permissionName)) {
-                permissionId = 1;
-              }
-
-              // Store permission ID for this auth
-              trigger.getExtMap().put("auth_" + i + "_permissionId", permissionId);
-
-              // Store the first permission ID as the main permission ID
-              if (i == 0) {
-                trigger.getExtMap().put("permissionId", permissionId);
-              }
-            }
-
-            if (authInfo.length() > 0) {
-              authsList.add(authInfo.toString());
-              // Store auth info length since extMap only accepts Long values
-              trigger.getExtMap().put("auth_" + i + "_infoLength", (long) authInfo.length());
-
-              // Log the actual auth info for debugging
-              logger.debug("Transaction {} - auth_{}: {}", trigger.getTransactionId(), i, authInfo.toString());
-            }
+          // If auths exist, try to process them
+          java.lang.reflect.Method getAuthsMethod = transaction.getRawData().getClass().getMethod("getAuths", int.class);
+          for (int i = 0; i < authsCount; i++) {
+            Object auth = getAuthsMethod.invoke(transaction.getRawData(), i);
+            trigger.getExtMap().put("auth_" + i + "_exists", 1L);
+            logger.debug("Transaction {} - auth_{} exists", trigger.getTransactionId(), i);
           }
         } else {
-          // Most transactions don't have auths field populated
           logger.debug("Transaction {} has no auths field data", trigger.getTransactionId());
         }
       } catch (Exception e) {
-        // auths field might not be available in this TRON version
-        logger.debug("Transaction {} - auths field not available: {}", trigger.getTransactionId(), e.getMessage());
+        // auths field might not be available in this TRON version or protobuf definition
+        logger.debug("Transaction {} - auths field not available or accessible: {}", trigger.getTransactionId(), e.getMessage());
       }
 
       // Contract information
@@ -636,6 +604,15 @@ public class BlockTransactionPrinter {
         trigger.setContractType(contract.getType().toString());
         trigger.setContractCallValue(getCallValue(contract));
         trigger.setContractData(contract.getParameter().toString());
+
+        // Extract Permission_id from contract - this is where it's actually stored!
+        if (contract.getPermissionId() > 0) {
+          if (trigger.getExtMap() == null) {
+            trigger.setExtMap(new HashMap<>());
+          }
+          trigger.getExtMap().put("permissionId", (long) contract.getPermissionId());
+          logger.debug("Transaction {} - Permission_id: {}", trigger.getTransactionId(), contract.getPermissionId());
+        }
 
         // Extract transfer information for transfer contracts
         extractTransferInfo(trigger, contract);
