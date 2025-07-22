@@ -36,7 +36,6 @@ import org.tron.protos.contract.SmartContractOuterClass;
 
 // TransactionLogTrigger related imports
 import org.tron.common.logsfilter.trigger.TransactionLogTrigger;
-import org.tron.common.logsfilter.trigger.TransactionDetail;
 import org.tron.common.logsfilter.trigger.InternalTransactionPojo;
 import org.tron.common.logsfilter.trigger.LogPojo;
 import org.tron.common.utils.JsonUtil;
@@ -548,24 +547,8 @@ public class BlockTransactionPrinter {
         trigger.setExtMap(new HashMap<>());
       }
 
-      // Create TransactionDetail matching walletsolidity/gettransactionbyid API response
-      TransactionDetail transactionDetail = new TransactionDetail();
-
-      // Set transaction ID
-      transactionDetail.setTxID(trigger.getTransactionId());
-
-      // Set raw_data_hex
-      transactionDetail.setRaw_data_hex(Hex.toHexString(transaction.getRawData().toByteArray()));
-
-      // Create and populate raw_data
-      TransactionDetail.RawData rawData = new TransactionDetail.RawData();
-      rawData.setRef_block_bytes(Hex.toHexString(transaction.getRawData().getRefBlockBytes().toByteArray()));
-      rawData.setRef_block_hash(Hex.toHexString(transaction.getRawData().getRefBlockHash().toByteArray()));
-      rawData.setExpiration(transaction.getRawData().getExpiration());
-      rawData.setTimestamp(transaction.getRawData().getTimestamp());
-
-      transactionDetail.setRaw_data(rawData);
-      trigger.setTransactionDetail(transactionDetail);
+      // Set the complete Transaction object directly - this matches exactly what the API returns
+      trigger.setTransactionDetail(transaction);
 
       // Also store in extMap for backward compatibility
       trigger.getExtMap().put("refBlockNum", transaction.getRawData().getRefBlockNum());
@@ -611,24 +594,9 @@ public class BlockTransactionPrinter {
         trigger.setContractCallValue(getCallValue(contract));
         trigger.setContractData(contract.getParameter().toString());
 
-        // Add contract information to TransactionDetail
-        if (trigger.getTransactionDetail() != null && trigger.getTransactionDetail().getRaw_data() != null) {
-          List<TransactionDetail.Contract> contracts = new ArrayList<>();
-          TransactionDetail.Contract contractDetail = new TransactionDetail.Contract();
-
-          contractDetail.setType(contract.getType().toString());
-          if (contract.getPermissionId() > 0) {
-            contractDetail.setPermission_id(contract.getPermissionId());
-            logger.debug("Transaction {} - Permission_id: {}", trigger.getTransactionId(), contract.getPermissionId());
-          }
-
-          // Add parameter information
-          TransactionDetail.Parameter parameter = new TransactionDetail.Parameter();
-          parameter.setType_url(contract.getParameter().getTypeUrl());
-          contractDetail.setParameter(parameter);
-
-          contracts.add(contractDetail);
-          trigger.getTransactionDetail().getRaw_data().setContract(contracts);
+        // Permission_id is already in the transaction object
+        if (contract.getPermissionId() > 0) {
+          logger.debug("Transaction {} - Permission_id: {}", trigger.getTransactionId(), contract.getPermissionId());
         }
 
         // Extract transfer information for transfer contracts
@@ -653,10 +621,7 @@ public class BlockTransactionPrinter {
         logger.debug("Transaction {} - signature_{}: {}", trigger.getTransactionId(), i, signature);
       }
 
-      // Add signatures to TransactionDetail
-      if (trigger.getTransactionDetail() != null) {
-        trigger.getTransactionDetail().setSignature(signatures);
-      }
+      // Signatures are already in the transaction object
       logger.debug("Transaction {} - Added {} signatures to TransactionDetail", trigger.getTransactionId(), signatures.size());
     }
 
