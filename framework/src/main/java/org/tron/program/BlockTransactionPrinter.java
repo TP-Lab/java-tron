@@ -555,12 +555,6 @@ public class BlockTransactionPrinter {
       trigger.getExtMap().put("expiration", transaction.getRawData().getExpiration());
       trigger.getExtMap().put("timestamp", transaction.getRawData().getTimestamp());
 
-      // Log the values for debugging
-      logger.debug("Transaction {} - ref_block_bytes: {}, ref_block_hash: {}",
-                  trigger.getTransactionId(),
-                  trigger.getRawDataDetail().get("ref_block_bytes"),
-                  trigger.getRawDataDetail().get("ref_block_hash"));
-
       // Authority information (auths field) - contains permission information
       // Note: auths field is rarely used in normal transactions, most permission info is in contract.Permission_id
       try {
