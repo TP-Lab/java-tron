@@ -116,23 +116,7 @@ public class TransactionLogTrigger extends Trigger {
 
   @Getter
   @Setter
-  private List<String> signature;
-
-  @Getter
-  @Setter
-  private String refBlockBytes;
-
-  @Getter
-  @Setter
-  private String refBlockHash;
-
-  @Getter
-  @Setter
-  private String scripts;
-
-  @Getter
-  @Setter
-  private long permissionId;
+  private TransactionDetail transactionDetail;
 
   public TransactionLogTrigger() {
     setTriggerName(Trigger.TRANSACTION_TRIGGER_NAME);
