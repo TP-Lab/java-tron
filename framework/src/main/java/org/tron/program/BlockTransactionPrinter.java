@@ -828,14 +828,18 @@ public class BlockTransactionPrinter {
       // For now, using the current block number as a placeholder
       trigger.setLatestSolidifiedBlockNumber(blockNumber);
 
-      // ExtMap - use getCancelUnfreezeV2AmountMap() from TransactionInfo if available
+      // ExtMap - merge getCancelUnfreezeV2AmountMap() from TransactionInfo with existing extMap data
+      // IMPORTANT: Don't overwrite existing extMap, merge the data instead
+      if (trigger.getExtMap() == null) {
+        trigger.setExtMap(new HashMap<>());
+      }
+
       if (transactionInfo.getCancelUnfreezeV2AmountCount() > 0) {
-        // TransactionInfo has getCancelUnfreezeV2AmountMap() which is exactly what extMap should contain
-        trigger.setExtMap(transactionInfo.getCancelUnfreezeV2AmountMap());
-      } else {
-        // Initialize empty extMap for cases without cancel unfreeze data
-        Map<String, Long> extMap = new HashMap<>();
-        trigger.setExtMap(extMap);
+        // Merge TransactionInfo's getCancelUnfreezeV2AmountMap() with existing extMap
+        Map<String, Long> cancelUnfreezeMap = transactionInfo.getCancelUnfreezeV2AmountMap();
+        trigger.getExtMap().putAll(cancelUnfreezeMap);
+        logger.debug("Transaction {} - Added {} cancel unfreeze entries to extMap",
+                    trigger.getTransactionId(), cancelUnfreezeMap.size());
       }
 
       // Additional TransactionInfo fields that can be extracted
@@ -884,6 +888,13 @@ public class BlockTransactionPrinter {
       if (transactionInfo.getPackingFee() > 0) {
         trigger.getExtMap().put("packingFee", transactionInfo.getPackingFee());
       }
+    }
+
+    // Log final extMap contents for debugging
+    if (trigger.getExtMap() != null && !trigger.getExtMap().isEmpty()) {
+      logger.debug("Transaction {} - Final extMap contents: {}", trigger.getTransactionId(), trigger.getExtMap());
+    } else {
+      logger.warn("Transaction {} - extMap is null or empty!", trigger.getTransactionId());
     }
 
     return trigger;
