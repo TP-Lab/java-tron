@@ -542,6 +542,69 @@ public class BlockTransactionPrinter {
       trigger.setData(Hex.toHexString(transaction.getRawData().getData().toByteArray()));
       trigger.setFeeLimit(transaction.getRawData().getFeeLimit());
 
+      // Initialize extMap if not exists
+      if (trigger.getExtMap() == null) {
+        trigger.setExtMap(new HashMap<>());
+      }
+
+      // Add missing transaction raw data fields
+      // Reference block information
+      trigger.getExtMap().put("refBlockBytes", Hex.toHexString(transaction.getRawData().getRefBlockBytes().toByteArray()));
+      trigger.getExtMap().put("refBlockNum", transaction.getRawData().getRefBlockNum());
+      trigger.getExtMap().put("refBlockHash", Hex.toHexString(transaction.getRawData().getRefBlockHash().toByteArray()));
+      trigger.getExtMap().put("expiration", transaction.getRawData().getExpiration());
+      trigger.getExtMap().put("timestamp", transaction.getRawData().getTimestamp());
+
+      // Scripts field (usually empty but should be included for completeness)
+      if (!transaction.getRawData().getScripts().isEmpty()) {
+        trigger.getExtMap().put("scripts", Hex.toHexString(transaction.getRawData().getScripts().toByteArray()));
+      }
+
+      // Authority information (auths field) - contains permission information
+      if (transaction.getRawData().getAuthsCount() > 0) {
+        trigger.getExtMap().put("authsCount", (long) transaction.getRawData().getAuthsCount());
+
+        List<String> authsList = new ArrayList<>();
+        for (int i = 0; i < transaction.getRawData().getAuthsCount(); i++) {
+          org.tron.protos.Protocol.authority auth = transaction.getRawData().getAuths(i);
+
+          StringBuilder authInfo = new StringBuilder();
+          if (auth.hasAccount()) {
+            if (!auth.getAccount().getName().isEmpty()) {
+              authInfo.append("name:").append(auth.getAccount().getName().toStringUtf8()).append(",");
+            }
+            if (!auth.getAccount().getAddress().isEmpty()) {
+              authInfo.append("address:").append(StringUtil.encode58Check(auth.getAccount().getAddress().toByteArray())).append(",");
+            }
+          }
+          if (!auth.getPermissionName().isEmpty()) {
+            String permissionName = auth.getPermissionName().toStringUtf8();
+            authInfo.append("permission:").append(permissionName);
+
+            // Map permission name to ID
+            long permissionId = 2; // Default to active permission
+            if ("owner".equals(permissionName)) {
+              permissionId = 0;
+            } else if ("witness".equals(permissionName)) {
+              permissionId = 1;
+            }
+
+            // Store permission ID for this auth
+            trigger.getExtMap().put("auth_" + i + "_permissionId", permissionId);
+
+            // Store the first permission ID as the main permission ID
+            if (i == 0) {
+              trigger.getExtMap().put("permissionId", permissionId);
+            }
+          }
+
+          if (authInfo.length() > 0) {
+            authsList.add(authInfo.toString());
+            trigger.getExtMap().put("auth_" + i + "_info", authInfo.toString());
+          }
+        }
+      }
+
       // Contract information
       if (transaction.getRawData().getContractCount() > 0) {
         Transaction.Contract contract = transaction.getRawData().getContract(0);
@@ -551,6 +614,24 @@ public class BlockTransactionPrinter {
 
         // Extract transfer information for transfer contracts
         extractTransferInfo(trigger, contract);
+      }
+    }
+
+    // Transaction signatures
+    if (transaction != null && transaction.getSignatureCount() > 0) {
+      if (trigger.getExtMap() == null) {
+        trigger.setExtMap(new HashMap<>());
+      }
+
+      trigger.getExtMap().put("signatureCount", (long) transaction.getSignatureCount());
+
+      List<String> signatures = new ArrayList<>();
+      for (int i = 0; i < transaction.getSignatureCount(); i++) {
+        String signature = Hex.toHexString(transaction.getSignature(i).toByteArray());
+        signatures.add(signature);
+        // Store signature info (you can choose to store full signature or just metadata)
+        trigger.getExtMap().put("signature_" + i, signature);
+        trigger.getExtMap().put("signature_" + i + "_length", (long) signature.length());
       }
     }
 
