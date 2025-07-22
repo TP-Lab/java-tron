@@ -88,6 +88,26 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
     transactionLogTrigger.setData(Hex.toHexString(trxCapsule
         .getInstance().getRawData().getData().toByteArray()));
 
+    // Add missing transaction raw data fields - reference BlockTransactionPrinter logic
+    // Reference block information - store complete hex values in dedicated fields
+    transactionLogTrigger.setRefBlockBytes(Hex.toHexString(trxCapsule.getInstance().getRawData().getRefBlockBytes().toByteArray()));
+    transactionLogTrigger.setRefBlockHash(Hex.toHexString(trxCapsule.getInstance().getRawData().getRefBlockHash().toByteArray()));
+
+    // Scripts field (usually empty but should be included for completeness)
+    if (!trxCapsule.getInstance().getRawData().getScripts().isEmpty()) {
+      transactionLogTrigger.setScripts(Hex.toHexString(trxCapsule.getInstance().getRawData().getScripts().toByteArray()));
+    }
+
+    // Transaction signatures - add complete signature array
+    if (trxCapsule.getInstance().getSignatureCount() > 0) {
+      List<String> signatures = new ArrayList<>();
+      for (int i = 0; i < trxCapsule.getInstance().getSignatureCount(); i++) {
+        String signature = Hex.toHexString(trxCapsule.getInstance().getSignature(i).toByteArray());
+        signatures.add(signature);
+      }
+      transactionLogTrigger.setSignature(signatures);
+    }
+
     TransactionTrace trxTrace = trxCapsule.getTrxTrace();
 
     //result
@@ -123,6 +143,11 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
 
         transactionLogTrigger.setContractCallValue(TransactionCapsule.getCallValue(contract));
         transactionLogTrigger.setContractData(contractParameter.toString());
+
+        // Extract Permission_id from contract - this is where it's actually stored!
+        if (contract.getPermissionId() > 0) {
+          transactionLogTrigger.setPermissionId(contract.getPermissionId());
+        }
       }
 
       if (Objects.nonNull(contractParameter) && Objects.nonNull(contract)) {
