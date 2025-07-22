@@ -548,61 +548,86 @@ public class BlockTransactionPrinter {
       }
 
       // Add missing transaction raw data fields
-      // Reference block information
-      trigger.getExtMap().put("refBlockBytes", Hex.toHexString(transaction.getRawData().getRefBlockBytes().toByteArray()));
+      // Reference block information - store lengths since extMap only accepts Long values
+      trigger.getExtMap().put("refBlockBytesLength", (long) transaction.getRawData().getRefBlockBytes().size());
       trigger.getExtMap().put("refBlockNum", transaction.getRawData().getRefBlockNum());
-      trigger.getExtMap().put("refBlockHash", Hex.toHexString(transaction.getRawData().getRefBlockHash().toByteArray()));
+      trigger.getExtMap().put("refBlockHashLength", (long) transaction.getRawData().getRefBlockHash().size());
       trigger.getExtMap().put("expiration", transaction.getRawData().getExpiration());
       trigger.getExtMap().put("timestamp", transaction.getRawData().getTimestamp());
 
       // Scripts field (usually empty but should be included for completeness)
       if (!transaction.getRawData().getScripts().isEmpty()) {
-        trigger.getExtMap().put("scripts", Hex.toHexString(transaction.getRawData().getScripts().toByteArray()));
+        trigger.getExtMap().put("scriptsLength", (long) transaction.getRawData().getScripts().size());
+      }
+
+      // Log the actual hex values for debugging (since we can't store them in extMap)
+      logger.debug("Transaction {} - refBlockBytes: {}, refBlockHash: {}",
+                  trigger.getTransactionId(),
+                  Hex.toHexString(transaction.getRawData().getRefBlockBytes().toByteArray()),
+                  Hex.toHexString(transaction.getRawData().getRefBlockHash().toByteArray()));
+
+      if (!transaction.getRawData().getScripts().isEmpty()) {
+        logger.debug("Transaction {} - scripts: {}",
+                    trigger.getTransactionId(),
+                    Hex.toHexString(transaction.getRawData().getScripts().toByteArray()));
       }
 
       // Authority information (auths field) - contains permission information
-      if (transaction.getRawData().getAuthsCount() > 0) {
-        trigger.getExtMap().put("authsCount", (long) transaction.getRawData().getAuthsCount());
+      // Note: auths field might not be available in all TRON versions or might be empty in most transactions
+      try {
+        if (transaction.getRawData().getAuthsCount() > 0) {
+          trigger.getExtMap().put("authsCount", (long) transaction.getRawData().getAuthsCount());
 
-        List<String> authsList = new ArrayList<>();
-        for (int i = 0; i < transaction.getRawData().getAuthsCount(); i++) {
-          org.tron.protos.Protocol.authority auth = transaction.getRawData().getAuths(i);
+          List<String> authsList = new ArrayList<>();
+          for (int i = 0; i < transaction.getRawData().getAuthsCount(); i++) {
+            org.tron.protos.Protocol.authority auth = transaction.getRawData().getAuths(i);
 
-          StringBuilder authInfo = new StringBuilder();
-          if (auth.hasAccount()) {
-            if (!auth.getAccount().getName().isEmpty()) {
-              authInfo.append("name:").append(auth.getAccount().getName().toStringUtf8()).append(",");
+            StringBuilder authInfo = new StringBuilder();
+            if (auth.hasAccount()) {
+              if (!auth.getAccount().getName().isEmpty()) {
+                authInfo.append("name:").append(auth.getAccount().getName().toStringUtf8()).append(",");
+              }
+              if (!auth.getAccount().getAddress().isEmpty()) {
+                authInfo.append("address:").append(StringUtil.encode58Check(auth.getAccount().getAddress().toByteArray())).append(",");
+              }
             }
-            if (!auth.getAccount().getAddress().isEmpty()) {
-              authInfo.append("address:").append(StringUtil.encode58Check(auth.getAccount().getAddress().toByteArray())).append(",");
+            if (!auth.getPermissionName().isEmpty()) {
+              String permissionName = auth.getPermissionName().toStringUtf8();
+              authInfo.append("permission:").append(permissionName);
+
+              // Map permission name to ID
+              long permissionId = 2; // Default to active permission
+              if ("owner".equals(permissionName)) {
+                permissionId = 0;
+              } else if ("witness".equals(permissionName)) {
+                permissionId = 1;
+              }
+
+              // Store permission ID for this auth
+              trigger.getExtMap().put("auth_" + i + "_permissionId", permissionId);
+
+              // Store the first permission ID as the main permission ID
+              if (i == 0) {
+                trigger.getExtMap().put("permissionId", permissionId);
+              }
+            }
+
+            if (authInfo.length() > 0) {
+              authsList.add(authInfo.toString());
+              // Store auth info length since extMap only accepts Long values
+              trigger.getExtMap().put("auth_" + i + "_infoLength", (long) authInfo.length());
+
+              // Log the actual auth info for debugging
+              logger.debug("Transaction {} - auth_{}: {}", trigger.getTransactionId(), i, authInfo.toString());
             }
           }
-          if (!auth.getPermissionName().isEmpty()) {
-            String permissionName = auth.getPermissionName().toStringUtf8();
-            authInfo.append("permission:").append(permissionName);
-
-            // Map permission name to ID
-            long permissionId = 2; // Default to active permission
-            if ("owner".equals(permissionName)) {
-              permissionId = 0;
-            } else if ("witness".equals(permissionName)) {
-              permissionId = 1;
-            }
-
-            // Store permission ID for this auth
-            trigger.getExtMap().put("auth_" + i + "_permissionId", permissionId);
-
-            // Store the first permission ID as the main permission ID
-            if (i == 0) {
-              trigger.getExtMap().put("permissionId", permissionId);
-            }
-          }
-
-          if (authInfo.length() > 0) {
-            authsList.add(authInfo.toString());
-            trigger.getExtMap().put("auth_" + i + "_info", authInfo.toString());
-          }
+        } else {
+          // Most transactions don't have auths field populated
+          logger.debug("Transaction {} has no auths field data", trigger.getTransactionId());
         }
+      } catch (Exception e) {
+        // auths field might not be available in this TRON version
+        logger.debug("Transaction {} - auths field not available: {}", trigger.getTransactionId(), e.getMessage());
       }
 
       // Contract information
@@ -629,9 +654,11 @@ public class BlockTransactionPrinter {
       for (int i = 0; i < transaction.getSignatureCount(); i++) {
         String signature = Hex.toHexString(transaction.getSignature(i).toByteArray());
         signatures.add(signature);
-        // Store signature info (you can choose to store full signature or just metadata)
-        trigger.getExtMap().put("signature_" + i, signature);
+        // Store signature metadata since extMap only accepts Long values
         trigger.getExtMap().put("signature_" + i + "_length", (long) signature.length());
+
+        // Log the actual signature for debugging (be careful in production)
+        logger.debug("Transaction {} - signature_{}: {}", trigger.getTransactionId(), i, signature);
       }
     }
 
