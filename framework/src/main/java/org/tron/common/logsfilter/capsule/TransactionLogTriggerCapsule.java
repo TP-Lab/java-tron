@@ -88,10 +88,9 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
     transactionLogTrigger.setData(Hex.toHexString(trxCapsule
         .getInstance().getRawData().getData().toByteArray()));
 
-    // Convert Transaction object to JSON string using TRON's Util.printTransaction method
-    // This matches exactly what the walletsolidity/gettransactionbyid API returns
-    String transactionJson = org.tron.core.services.http.Util.printTransaction(trxCapsule.getInstance(), true);
-    transactionLogTrigger.setTransactionDetail(transactionJson);
+    // Serialize Transaction object to binary protobuf format
+    // This preserves all data and can be deserialized back to Transaction object
+    transactionLogTrigger.setTransactionDetail(trxCapsule.getInstance().toByteArray());
 
     TransactionTrace trxTrace = trxCapsule.getTrxTrace();
 
