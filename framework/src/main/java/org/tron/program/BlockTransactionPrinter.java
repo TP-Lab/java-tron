@@ -547,8 +547,10 @@ public class BlockTransactionPrinter {
         trigger.setExtMap(new HashMap<>());
       }
 
-      // Set the complete Transaction object directly - this matches exactly what the API returns
-      trigger.setTransactionDetail(transaction);
+      // Convert Transaction object to JSON string using TRON's Util.printTransaction method
+      // This matches exactly what the walletsolidity/gettransactionbyid API returns
+      String transactionJson = org.tron.core.services.http.Util.printTransaction(transaction, true);
+      trigger.setTransactionDetail(transactionJson);
 
       // Also store in extMap for backward compatibility
       trigger.getExtMap().put("refBlockNum", transaction.getRawData().getRefBlockNum());
