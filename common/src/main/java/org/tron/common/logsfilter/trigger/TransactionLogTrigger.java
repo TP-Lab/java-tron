@@ -114,6 +114,26 @@ public class TransactionLogTrigger extends Trigger {
   @Setter
   private Map<String, Long> extMap;
 
+  @Getter
+  @Setter
+  private List<String> signature;
+
+  @Getter
+  @Setter
+  private String refBlockBytes;
+
+  @Getter
+  @Setter
+  private String refBlockHash;
+
+  @Getter
+  @Setter
+  private String scripts;
+
+  @Getter
+  @Setter
+  private long permissionId;
+
   public TransactionLogTrigger() {
     setTriggerName(Trigger.TRANSACTION_TRIGGER_NAME);
   }

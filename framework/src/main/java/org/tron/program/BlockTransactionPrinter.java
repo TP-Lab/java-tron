@@ -548,28 +548,27 @@ public class BlockTransactionPrinter {
       }
 
       // Add missing transaction raw data fields
-      // Reference block information - store lengths since extMap only accepts Long values
-      trigger.getExtMap().put("refBlockBytesLength", (long) transaction.getRawData().getRefBlockBytes().size());
+      // Reference block information - now store complete hex values in dedicated fields
+      trigger.setRefBlockBytes(Hex.toHexString(transaction.getRawData().getRefBlockBytes().toByteArray()));
+      trigger.setRefBlockHash(Hex.toHexString(transaction.getRawData().getRefBlockHash().toByteArray()));
+
+      // Also store in extMap for backward compatibility
       trigger.getExtMap().put("refBlockNum", transaction.getRawData().getRefBlockNum());
-      trigger.getExtMap().put("refBlockHashLength", (long) transaction.getRawData().getRefBlockHash().size());
       trigger.getExtMap().put("expiration", transaction.getRawData().getExpiration());
       trigger.getExtMap().put("timestamp", transaction.getRawData().getTimestamp());
 
       // Scripts field (usually empty but should be included for completeness)
       if (!transaction.getRawData().getScripts().isEmpty()) {
+        trigger.setScripts(Hex.toHexString(transaction.getRawData().getScripts().toByteArray()));
         trigger.getExtMap().put("scriptsLength", (long) transaction.getRawData().getScripts().size());
       }
 
-      // Log the actual hex values for debugging (since we can't store them in extMap)
+      // Log the values for debugging
       logger.debug("Transaction {} - refBlockBytes: {}, refBlockHash: {}",
-                  trigger.getTransactionId(),
-                  Hex.toHexString(transaction.getRawData().getRefBlockBytes().toByteArray()),
-                  Hex.toHexString(transaction.getRawData().getRefBlockHash().toByteArray()));
+                  trigger.getTransactionId(), trigger.getRefBlockBytes(), trigger.getRefBlockHash());
 
-      if (!transaction.getRawData().getScripts().isEmpty()) {
-        logger.debug("Transaction {} - scripts: {}",
-                    trigger.getTransactionId(),
-                    Hex.toHexString(transaction.getRawData().getScripts().toByteArray()));
+      if (trigger.getScripts() != null) {
+        logger.debug("Transaction {} - scripts: {}", trigger.getTransactionId(), trigger.getScripts());
       }
 
       // Authority information (auths field) - contains permission information
@@ -607,10 +606,7 @@ public class BlockTransactionPrinter {
 
         // Extract Permission_id from contract - this is where it's actually stored!
         if (contract.getPermissionId() > 0) {
-          if (trigger.getExtMap() == null) {
-            trigger.setExtMap(new HashMap<>());
-          }
-          trigger.getExtMap().put("permissionId", (long) contract.getPermissionId());
+          trigger.setPermissionId(contract.getPermissionId());
           logger.debug("Transaction {} - Permission_id: {}", trigger.getTransactionId(), contract.getPermissionId());
         }
 
@@ -631,12 +627,14 @@ public class BlockTransactionPrinter {
       for (int i = 0; i < transaction.getSignatureCount(); i++) {
         String signature = Hex.toHexString(transaction.getSignature(i).toByteArray());
         signatures.add(signature);
-        // Store signature metadata since extMap only accepts Long values
-        trigger.getExtMap().put("signature_" + i + "_length", (long) signature.length());
 
-        // Log the actual signature for debugging (be careful in production)
+        // Log the actual signature for debugging
         logger.debug("Transaction {} - signature_{}: {}", trigger.getTransactionId(), i, signature);
       }
+
+      // Set the complete signature array in the trigger
+      trigger.setSignature(signatures);
+      logger.debug("Transaction {} - Added {} signatures to trigger", trigger.getTransactionId(), signatures.size());
     }
 
     // Transaction execution results and fees
