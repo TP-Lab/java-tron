@@ -117,7 +117,7 @@ public class TransactionLogTrigger extends Trigger {
 
   @Getter
   @Setter
-  private byte[] transactionDetail;
+  private String transactionDetail;
 
   public TransactionLogTrigger() {
     setTriggerName(Trigger.TRANSACTION_TRIGGER_NAME);

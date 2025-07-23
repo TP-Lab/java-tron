@@ -547,9 +547,7 @@ public class BlockTransactionPrinter {
         trigger.setExtMap(new HashMap<>());
       }
 
-      // Serialize Transaction object to binary protobuf format
-      // This preserves all data and can be deserialized back to Transaction object
-      trigger.setTransactionDetail(transaction.toByteArray());
+      trigger.setTransactionDetail(transaction.toString());
 
       // Also store in extMap for backward compatibility
       trigger.getExtMap().put("refBlockNum", transaction.getRawData().getRefBlockNum());

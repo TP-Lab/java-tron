@@ -88,9 +88,8 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
     transactionLogTrigger.setData(Hex.toHexString(trxCapsule
         .getInstance().getRawData().getData().toByteArray()));
 
-    // Serialize Transaction object to binary protobuf format
-    // This preserves all data and can be deserialized back to Transaction object
-    transactionLogTrigger.setTransactionDetail(trxCapsule.getInstance().toByteArray());
+    // Use protobuf text format, same way as txResult uses toString()
+    transactionLogTrigger.setTransactionDetail(trxCapsule.getInstance().toString());
 
     TransactionTrace trxTrace = trxCapsule.getTrxTrace();
 
