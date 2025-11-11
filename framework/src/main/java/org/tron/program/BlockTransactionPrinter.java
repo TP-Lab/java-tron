@@ -76,16 +76,16 @@ import org.apache.kafka.common.serialization.StringSerializer;
  * Examples:
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100
  *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 73592989 73592991 -c main_net_config.conf -d /tron/light/
- *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f trigger
- *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f json
- *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f trigger -kb localhost:9092 -kt tron-transactions
- *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter -tx <txid> -f trigger -kb localhost:9092 -kt tron-transactions
- *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -f trigger -threads 8
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -fm trigger
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -fm json
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -fm trigger -kb localhost:9092 -kt tron-transactions
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter -tx <txid> -fm trigger -kb localhost:9092 -kt tron-transactions
+ *    java -cp "build/libs/*" org.tron.program.BlockTransactionPrinter 1000 1100 -fm trigger -threads 8
  * 
  * Options:
  *    -c <config_file>: Specify a custom configuration file
  *    -d <data_dir>: Specify a custom data directory
- *    -f <format>: Output format, default: both
+ *    -fm <format>: Output format, default: both
  *        json     - Standard JSON format using JsonFormat
  *        protobuf - Protobuf toString format
  *        both     - Both JSON and protobuf formats
@@ -1116,7 +1116,7 @@ public class BlockTransactionPrinter {
       System.out.println("Options:");
       System.out.println("  -c <config_file>: Specify a custom configuration file");
       System.out.println("  -d <data_dir>: Specify a custom data directory");
-      System.out.println("  -f <format>: Output format (json|protobuf|both|trigger), default: both");
+      System.out.println("  -fm <format>: Output format (json|protobuf|both|trigger), default: both");
       System.out.println("  -kb <brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)");
       System.out.println("  -kt <topic>: Kafka topic name for sending trigger data (requires -kb)");
       System.out.println("  -threads <count>: Number of threads for concurrent transaction processing, default: " + DEFAULT_THREAD_POOL_SIZE);
@@ -1126,7 +1126,7 @@ public class BlockTransactionPrinter {
     // Parse output format option
     String outputFormat = "both"; // default
     for (int i = 0; i < args.length - 1; i++) {
-      if ("-f".equals(args[i])) {
+      if ("-fm".equals(args[i])) {
         outputFormat = args[i + 1].toLowerCase();
         logger.info("Output format set to: {}", outputFormat);
         break;
@@ -1231,10 +1231,10 @@ public class BlockTransactionPrinter {
       String[] configArgs;
       int configStartIndex = isTransactionMode ? 2 : 2; // Both modes skip first 2 args
 
-      // Filter out custom parameters (-f, -kb, -kt, -threads) and their values since they're not TRON node parameters
+      // Filter out custom parameters (-fm, -kb, -kt, -threads) and their values since they're not TRON node parameters
       List<String> filteredArgs = new ArrayList<>();
       for (int i = configStartIndex; i < args.length; i++) {
-        if ("-f".equals(args[i]) || "-kb".equals(args[i]) || "-kt".equals(args[i]) || "-threads".equals(args[i])) {
+        if ("-fm".equals(args[i]) || "-kb".equals(args[i]) || "-kt".equals(args[i]) || "-threads".equals(args[i])) {
           // Skip custom parameter and its value
           i++; // Skip the next argument (parameter value)
         } else {
