@@ -1233,10 +1233,17 @@ public class BlockTransactionPrinter {
 
       // Filter out custom parameters (-f, -kb, -kt, -threads) and their values since they're not TRON node parameters
       List<String> filteredArgs = new ArrayList<>();
+      boolean skipNext = false;
       for (int i = configStartIndex; i < args.length; i++) {
+        if (skipNext) {
+          // Skip this argument (it's the value of a custom parameter)
+          skipNext = false;
+          continue;
+        }
+
         if ("-f".equals(args[i]) || "-kb".equals(args[i]) || "-kt".equals(args[i]) || "-threads".equals(args[i])) {
-          // Skip custom parameter and its value
-          i++; // Skip the next argument (parameter value)
+          // Skip custom parameter and mark to skip its value
+          skipNext = true;
         } else {
           filteredArgs.add(args[i]);
         }
