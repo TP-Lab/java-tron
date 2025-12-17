@@ -2156,6 +2156,13 @@ public class Manager {
   private void processTransactionTrigger(BlockCapsule newBlock) {
     List<TransactionCapsule> transactionCapsuleList = newBlock.getTransactions();
 
+    FilterQuery filterQuery = EventPluginLoader.getInstance().getFilterQuery();
+    if (Objects.nonNull(filterQuery) && filterQuery.getFromBlock() != FilterQuery.EARLIEST_BLOCK_NUM) {
+      if (newBlock.getNum() < filterQuery.getFromBlock()) {
+        return;
+      }
+    }
+
     // need to set eth compatible data from transactionInfoList
     if (EventPluginLoader.getInstance().isTransactionLogTriggerEthCompatible()
           && newBlock.getNum() != 0) {
