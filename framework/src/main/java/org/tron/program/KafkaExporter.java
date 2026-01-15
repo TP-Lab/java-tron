@@ -134,6 +134,7 @@ public class KafkaExporter {
             log.info("No end block specified, using head: {}", to);
         }
 
+        logDatabaseInfo(chainBaseManager, from, to);
         log.info("Starting processing from {} to {}", from, to);
 
         AsyncTracker tracker = new AsyncTracker();
@@ -257,6 +258,34 @@ public class KafkaExporter {
         writer.write(record, encoder);
         encoder.flush();
         return out.toByteArray();
+    }
+
+    private static void logDatabaseInfo(ChainBaseManager chainBaseManager, long from, long to) {
+        log.info("Database directory: {}", Args.getInstance().getOutputDirectory());
+
+        long lowestBlockNum = -1;
+        long latestBlockNum = -1;
+        try {
+            lowestBlockNum = chainBaseManager.getLowestBlockNum();
+        } catch (Exception e) {
+            log.warn("Failed to get lowest block number: {}", e.getMessage());
+        }
+
+        try {
+            latestBlockNum = chainBaseManager.getDynamicPropertiesStore().getLatestBlockHeaderNumber();
+        } catch (Exception e) {
+            log.warn("Failed to get latest block number: {}", e.getMessage());
+        }
+
+        if (lowestBlockNum >= 0 || latestBlockNum >= 0) {
+            log.info("Database block range: {} to {}", lowestBlockNum, latestBlockNum);
+        } else {
+            log.warn("Database block range unavailable.");
+        }
+
+        if (lowestBlockNum >= 0 && latestBlockNum >= 0 && (from < lowestBlockNum || to > latestBlockNum)) {
+            log.warn("Requested block range {} to {} outside database range {} to {}", from, to, lowestBlockNum, latestBlockNum);
+        }
     }
 
     private static void setupTronContext(ExporterConfig config) {
