@@ -262,16 +262,34 @@ public class KafkaExporter {
     }
 
     private static void setupTronContext(ExporterConfig config) {
-        // Disable unnecessary services
-        CommonParameter.getInstance().setNeedToUpdateAsset(false);
-        CommonParameter.getInstance().setP2pDisable(true);
-        CommonParameter.getInstance().setRpcEnable(false);
-        CommonParameter.getInstance().setEventSubscribe(false);
-        
+        // Disable unnecessary services for read-only exporter mode
+        CommonParameter parameter = CommonParameter.getInstance();
+        parameter.setNeedToUpdateAsset(false);
+        parameter.setP2pDisable(true);
+        parameter.setRpcEnable(false);
+        parameter.setRpcSolidityEnable(false);
+        parameter.setRpcPBFTEnable(false);
+        parameter.setFullNodeHttpEnable(false);
+        parameter.setSolidityNodeHttpEnable(false);
+        parameter.setPBFTHttpEnable(false);
+        parameter.setJsonRpcHttpFullNodeEnable(false);
+        parameter.setJsonRpcHttpSolidityNodeEnable(false);
+        parameter.setJsonRpcHttpPBFTNodeEnable(false);
+        parameter.setEventSubscribe(false);
+        parameter.setNodeMetricsEnable(false);
+        parameter.setMetricsStorageEnable(false);
+        parameter.setMetricsPrometheusEnable(false);
+
         System.setProperty("database.readonly", "true");
+        System.setProperty("storage.readonly", "true");
         
         // Setup args
         Args.setParam(new String[]{"-c", config.configFile, "-d", config.outputDirectory}, Constant.TESTNET_CONF);
+
+        if (Args.getInstance().getStorage() != null) {
+            Args.getInstance().getStorage().setDbSync(false);
+            Args.getInstance().getStorage().setMaxFlushCount(0);
+        }
     }
 
     static class AsyncTracker {
