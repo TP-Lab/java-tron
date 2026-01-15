@@ -275,13 +275,13 @@ public class KafkaExporter {
         String outputDirectory = Args.getInstance().getOutputDirectory();
         log.info("Output directory: {}", outputDirectory);
         if (Args.getInstance().getStorage() != null) {
-            log.info("Storage db directory: {}", Args.getInstance().getStorage().getDbDirectory());
-            log.info("Storage index directory: {}", Args.getInstance().getStorage().getIndexDirectory());
+            String dbDirectory = Args.getInstance().getStorage().getDbDirectory();
+            String indexDirectory = Args.getInstance().getStorage().getIndexDirectory();
+            log.info("Storage db directory: {}", dbDirectory);
+            log.info("Storage index directory: {}", indexDirectory);
             log.info("Storage db engine: {}", Args.getInstance().getStorage().getDbEngine());
-            log.info("Resolved db path: {}",
-                    Paths.get(outputDirectory, Args.getInstance().getStorage().getDbDirectory()));
-            log.info("Resolved index path: {}",
-                    Paths.get(outputDirectory, Args.getInstance().getStorage().getIndexDirectory()));
+            log.info("Resolved db path: {}", resolveStoragePath(outputDirectory, dbDirectory));
+            log.info("Resolved index path: {}", resolveStoragePath(outputDirectory, indexDirectory));
         } else {
             log.warn("Storage config not initialized.");
         }
@@ -335,11 +335,52 @@ public class KafkaExporter {
         
         // Setup args
         Args.setParam(new String[]{"-c", config.configFile}, Constant.TESTNET_CONF);
+        normalizeStorageDirectories();
 
         if (Args.getInstance().getStorage() != null) {
             Args.getInstance().getStorage().setDbSync(false);
             Args.getInstance().getStorage().setMaxFlushCount(0);
         }
+    }
+
+    private static void normalizeStorageDirectories() {
+        if (Args.getInstance().getStorage() == null) {
+            return;
+        }
+
+        String dbDirectory = normalizePath(Args.getInstance().getStorage().getDbDirectory());
+        String indexDirectory = normalizePath(Args.getInstance().getStorage().getIndexDirectory());
+        Args.getInstance().getStorage().setDbDirectory(dbDirectory);
+        Args.getInstance().getStorage().setIndexDirectory(indexDirectory);
+
+        String rawOutputDirectory = Args.getInstance().outputDirectory;
+        boolean outputDirectoryDefault = StringUtils.isBlank(rawOutputDirectory)
+                || "output-directory".equals(rawOutputDirectory);
+        if (outputDirectoryDefault && (isAbsolutePath(dbDirectory) || isAbsolutePath(indexDirectory))) {
+            Args.getInstance().outputDirectory = "";
+            log.info("Output directory cleared because storage directory is absolute.");
+        }
+    }
+
+    private static String normalizePath(String path) {
+        if (path == null) {
+            return "";
+        }
+        return path.trim();
+    }
+
+    private static boolean isAbsolutePath(String path) {
+        return StringUtils.isNotBlank(path) && Paths.get(path).isAbsolute();
+    }
+
+    private static String resolveStoragePath(String outputDirectory, String storageDirectory) {
+        if (StringUtils.isBlank(storageDirectory)) {
+            return outputDirectory;
+        }
+        if (isAbsolutePath(storageDirectory)) {
+            return Paths.get(storageDirectory).toString();
+        }
+        return Paths.get(outputDirectory, storageDirectory).toString();
     }
 
     static class AsyncTracker {
