@@ -33,8 +33,10 @@ import org.tron.core.config.args.Args;
 import org.tron.protos.Protocol.TransactionInfo;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
@@ -261,7 +263,28 @@ public class KafkaExporter {
     }
 
     private static void logDatabaseInfo(ChainBaseManager chainBaseManager, long from, long to) {
-        log.info("Database directory: {}", Args.getInstance().getOutputDirectory());
+        String configFile = Args.getInstance().getShellConfFileName();
+        if (StringUtils.isBlank(configFile)) {
+            log.info("Config file: <default>");
+        } else {
+            File configPath = new File(configFile);
+            log.info("Config file: {} (exists: {}, absolute: {})",
+                    configFile, configPath.exists(), configPath.getAbsolutePath());
+        }
+
+        String outputDirectory = Args.getInstance().getOutputDirectory();
+        log.info("Output directory: {}", outputDirectory);
+        if (Args.getInstance().getStorage() != null) {
+            log.info("Storage db directory: {}", Args.getInstance().getStorage().getDbDirectory());
+            log.info("Storage index directory: {}", Args.getInstance().getStorage().getIndexDirectory());
+            log.info("Storage db engine: {}", Args.getInstance().getStorage().getDbEngine());
+            log.info("Resolved db path: {}",
+                    Paths.get(outputDirectory, Args.getInstance().getStorage().getDbDirectory()));
+            log.info("Resolved index path: {}",
+                    Paths.get(outputDirectory, Args.getInstance().getStorage().getIndexDirectory()));
+        } else {
+            log.warn("Storage config not initialized.");
+        }
 
         long lowestBlockNum = -1;
         long latestBlockNum = -1;
