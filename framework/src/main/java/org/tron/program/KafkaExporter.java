@@ -2,7 +2,6 @@ package org.tron.program;
 
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
-import lombok.extern.slf4j.Slf4j;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericDatumWriter;
@@ -18,6 +17,8 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.bouncycastle.util.encoders.Hex;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.tron.common.application.TronApplicationContext;
 import org.tron.common.parameter.CommonParameter;
@@ -66,8 +67,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *   -d output-directory
  * </pre>
  */
-@Slf4j(topic = "app")
 public class KafkaExporter {
+    private static final Logger log = LoggerFactory.getLogger("app");
 
     // Schema ID 5: BlockData
     private static final String BLOCK_DATA_SCHEMA = "{\"type\":\"record\",\"name\":\"BlockData\",\"fields\":[{\"name\":\"chain_id\",\"type\":\"string\"},{\"name\":\"block_number\",\"type\":\"long\"},{\"name\":\"block_hash\",\"type\":\"string\"},{\"name\":\"log_count\",\"type\":\"long\"},{\"name\":\"timestamp\",\"type\":\"long\"}]}";
