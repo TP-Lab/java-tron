@@ -52,8 +52,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *   --chain-id &lt;chain_id&gt; \
  *   [--from-block &lt;start_block&gt;] \
  *   [--to-block &lt;end_block&gt;] \
- *   [--config &lt;config_file&gt;] \
- *   [--output-directory &lt;data_dir&gt;]
+ *   [--config &lt;config_file&gt;]
  * </pre>
  *
  * <p>Example:</p>
@@ -63,8 +62,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *   --chain-id 728126428 \
  *   --from-block 0 \
  *   --to-block 1000 \
- *   -c config.conf \
- *   -d output-directory
+ *   -c config.conf
  * </pre>
  */
 public class KafkaExporter {
@@ -284,7 +282,7 @@ public class KafkaExporter {
         System.setProperty("storage.readonly", "true");
         
         // Setup args
-        Args.setParam(new String[]{"-c", config.configFile, "-d", config.outputDirectory}, Constant.TESTNET_CONF);
+        Args.setParam(new String[]{"-c", config.configFile}, Constant.TESTNET_CONF);
 
         if (Args.getInstance().getStorage() != null) {
             Args.getInstance().getStorage().setDbSync(false);
@@ -342,9 +340,6 @@ public class KafkaExporter {
 
         @Parameter(names = {"-c", "--config"}, description = "Config File", required = false)
         String configFile = "config.conf";
-
-        @Parameter(names = {"-d", "--output-directory"}, description = "Data Directory", required = false)
-        String outputDirectory = "output-directory";
 
         @Parameter(names = "--help", help = true)
         boolean help;
