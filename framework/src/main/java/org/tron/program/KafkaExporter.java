@@ -41,6 +41,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -140,6 +145,10 @@ public class KafkaExporter {
         log.info("Starting processing from {} to {}", from, to);
 
         AsyncTracker tracker = new AsyncTracker();
+        ExecutorService executor = Executors.newFixedThreadPool(config.threads);
+        log.info("Initialized thread pool with {} threads", config.threads);
+
+        try {
 
         for (long num = from; num <= to; num++) {
             // Fail fast check
@@ -153,7 +162,7 @@ public class KafkaExporter {
                 continue;
             }
 
-            processBlock(block, config, producer, blockSchema, logSchema, tracker, wallet);
+            processBlock(block, config, producer, blockSchema, logSchema, tracker, wallet, executor);
 
             if (num % 100 == 0) {
                 log.info("Processed block {}", num);
@@ -169,13 +178,24 @@ public class KafkaExporter {
             throw new RuntimeException("Kafka export failed during flush.", tracker.lastException);
         }
 
+        } finally {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+            }
+        }
+
         producer.close();
         context.close();
         log.info("Done.");
     }
 
     private static void processBlock(BlockCapsule block, ExporterConfig config, KafkaProducer<String, byte[]> producer,
-                                     Schema blockSchema, Schema logSchema, AsyncTracker tracker, Wallet wallet) throws IOException {
+                                     Schema blockSchema, Schema logSchema, AsyncTracker tracker, Wallet wallet, ExecutorService executor) throws IOException {
         String blockHash = block.getBlockId().toString();
         long blockNum = block.getNum();
         long timestamp = block.getTimeStamp();
@@ -184,43 +204,62 @@ public class KafkaExporter {
         long logIndexTotal = 0;
 
         List<TransactionCapsule> txs = block.getTransactions();
-        for (int txIndex = 0; txIndex < txs.size(); txIndex++) {
-            TransactionCapsule tx = txs.get(txIndex);
-            String txHash = Hex.toHexString(tx.getTransactionId().getBytes());
+        List<Future<List<GenericRecord>>> futures = new ArrayList<>(txs.size());
+
+        for (int i = 0; i < txs.size(); i++) {
+            final int txIndex = i;
+            final TransactionCapsule tx = txs.get(i);
             
-            TransactionInfo info = wallet.getTransactionInfoById(tx.getTransactionId().getByteString());
-            if (info == null) {
-                // If the block exists but tx info is missing, it might be an issue.
-                // However, for some lightweight nodes or unconfirmed txs it might happen.
-                // Given we are iterating verified blocks, this warning is useful.
-                log.warn("Transaction Info not found for tx: {} in block: {}", txHash, blockNum);
-                continue; 
-            }
-
-            List<TransactionInfo.Log> logs = info.getLogList();
-            for (TransactionInfo.Log lg : logs) {
-                GenericRecord logRecord = new GenericData.Record(logSchema);
-                logRecord.put("address", Hex.toHexString(lg.getAddress().toByteArray()));
-                logRecord.put("chain_id", config.chainId);
-                logRecord.put("data", Hex.toHexString(lg.getData().toByteArray()));
-                logRecord.put("block_hash", blockHash);
-                logRecord.put("block_number", blockNum);
-                logRecord.put("transaction_hash", txHash);
-                logRecord.put("transaction_index", (long) txIndex);
-                logRecord.put("log_index", logIndexTotal++); // Block-scoped log index
-                logRecord.put("removed", false);
-
-                List<String> topics = new ArrayList<>();
-                for (com.google.protobuf.ByteString topic : lg.getTopicsList()) {
-                    topics.add(Hex.toHexString(topic.toByteArray()));
-                }
+            futures.add(executor.submit(() -> {
+                List<GenericRecord> txLogs = new ArrayList<>();
+                String txHash = Hex.toHexString(tx.getTransactionId().getBytes());
                 
-                logRecord.put("topic0", topics.size() > 0 ? topics.get(0) : "");
-                logRecord.put("topic1", topics.size() > 1 ? topics.get(1) : "");
-                logRecord.put("topic2", topics.size() > 2 ? topics.get(2) : "");
-                logRecord.put("topic3", topics.size() > 3 ? topics.get(3) : "");
+                // DB Read inside worker thread
+                TransactionInfo info = wallet.getTransactionInfoById(tx.getTransactionId().getByteString());
+                if (info == null) {
+                    log.warn("Transaction Info not found for tx: {} in block: {}", txHash, blockNum);
+                    return txLogs; 
+                }
 
-                logRecords.add(logRecord);
+                List<TransactionInfo.Log> logs = info.getLogList();
+                for (TransactionInfo.Log lg : logs) {
+                    GenericRecord logRecord = new GenericData.Record(logSchema);
+                    logRecord.put("address", Hex.toHexString(lg.getAddress().toByteArray()));
+                    logRecord.put("chain_id", config.chainId);
+                    logRecord.put("data", Hex.toHexString(lg.getData().toByteArray()));
+                    logRecord.put("block_hash", blockHash);
+                    logRecord.put("block_number", blockNum);
+                    logRecord.put("transaction_hash", txHash);
+                    logRecord.put("transaction_index", (long) txIndex);
+                    // log_index set later
+                    logRecord.put("removed", false);
+
+                    List<String> topics = new ArrayList<>();
+                    for (com.google.protobuf.ByteString topic : lg.getTopicsList()) {
+                        topics.add(Hex.toHexString(topic.toByteArray()));
+                    }
+                    
+                    logRecord.put("topic0", topics.size() > 0 ? topics.get(0) : "");
+                    logRecord.put("topic1", topics.size() > 1 ? topics.get(1) : "");
+                    logRecord.put("topic2", topics.size() > 2 ? topics.get(2) : "");
+                    logRecord.put("topic3", topics.size() > 3 ? topics.get(3) : "");
+
+                    txLogs.add(logRecord);
+                }
+                return txLogs;
+            }));
+        }
+
+        // Collect results in order
+        for (Future<List<GenericRecord>> future : futures) {
+            try {
+                List<GenericRecord> txLogs = future.get();
+                for (GenericRecord rec : txLogs) {
+                    rec.put("log_index", logIndexTotal++);
+                    logRecords.add(rec);
+                }
+            } catch (InterruptedException | ExecutionException e) {
+                throw new IOException("Error processing transaction", e);
             }
         }
 
@@ -433,6 +472,9 @@ public class KafkaExporter {
 
         @Parameter(names = {"-c", "--config"}, description = "Config File", required = false)
         String configFile = "config.conf";
+
+        @Parameter(names = {"--threads"}, description = "Number of threads for parallel processing")
+        int threads = 16;
 
         @Parameter(names = "--help", help = true)
         boolean help;
