@@ -153,9 +153,12 @@ public class KafkaExporter {
         // Preloading Buffer
         BlockingQueue<BlockTask> blockQueue = new LinkedBlockingQueue<>(50);
         
+        final long finalFrom = from;
+        final long finalTo = to;
+        
         Thread preloader = new Thread(() -> {
             log.info("Preloader started.");
-            for (long num = from; num <= to; num++) {
+            for (long num = finalFrom; num <= finalTo; num++) {
                 if (tracker.hasError || Thread.currentThread().isInterrupted()) break;
                 try {
                     BlockCapsule block = chainBaseManager.getBlockByNum(num);
