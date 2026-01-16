@@ -379,6 +379,19 @@ public class KafkaExporter {
         if (Args.getInstance().getStorage() != null) {
             Args.getInstance().getStorage().setDbSync(false);
             Args.getInstance().getStorage().setMaxFlushCount(0);
+
+            // Optimize Cache for Random Reads (which processBlock heavily relies on)
+            // Increase BlockCache size if possible
+            if (Args.getInstance().getStorage().getPropertyMap() != null) {
+                Args.getInstance().getStorage().getPropertyMap().values().forEach(prop -> {
+                    if (prop.getDbOptions() != null) {
+                        // Increase cache size to 512MB (since machine has 60GB RAM)
+                        // With ~20 DB instances, this consumes ~10GB of off-heap memory
+                        prop.getDbOptions().cacheSize(512 * 1024 * 1024L); 
+                    }
+                });
+                log.info("Optimized RocksDB cache size to 512MB per db");
+            }
         }
     }
 
