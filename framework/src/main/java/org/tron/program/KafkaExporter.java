@@ -215,10 +215,10 @@ public class KafkaExporter {
                     topics.add(Hex.toHexString(topic.toByteArray()));
                 }
                 
-                logRecord.put("topic0", topics.size() > 0 ? topics.get(0) : null);
-                logRecord.put("topic1", topics.size() > 1 ? topics.get(1) : null);
-                logRecord.put("topic2", topics.size() > 2 ? topics.get(2) : null);
-                logRecord.put("topic3", topics.size() > 3 ? topics.get(3) : null);
+                logRecord.put("topic0", topics.size() > 0 ? topics.get(0) : "");
+                logRecord.put("topic1", topics.size() > 1 ? topics.get(1) : "");
+                logRecord.put("topic2", topics.size() > 2 ? topics.get(2) : "");
+                logRecord.put("topic3", topics.size() > 3 ? topics.get(3) : "");
 
                 logRecords.add(logRecord);
             }
