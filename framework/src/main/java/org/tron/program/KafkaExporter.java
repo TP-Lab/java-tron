@@ -177,6 +177,10 @@ public class KafkaExporter {
 
         try {
 
+        long startTime = System.currentTimeMillis();
+        long totalTxs = 0;
+        long totalLogs = 0;
+
         for (long num = from; num <= to; num++) {
             // Fail fast check
             if (tracker.hasError) {
@@ -197,10 +201,19 @@ public class KafkaExporter {
                 continue;
             }
 
-            processBlock(block, config, producer, blockSchema, logSchema, tracker, wallet, executor);
+            int logsCount = processBlock(block, config, producer, blockSchema, logSchema, tracker, wallet, executor);
+            
+            totalTxs += block.getTransactions().size();
+            totalLogs += logsCount;
 
             if (num % 100 == 0) {
-                log.info("Processed block {}", num);
+                long elapsed = System.currentTimeMillis() - startTime;
+                if (elapsed > 0) {
+                   double blocksPerSec = (double)(num - from + 1) * 1000 / elapsed;
+                   double txsPerSec = (double) totalTxs * 1000 / elapsed;
+                   log.info("Processed block {} | Speed: {:.2f} blks/s, {:.2f} txs/s | Queue: {}/50 | Elapsed: {}s | Total Txs: {} | Total Logs: {}", 
+                           num, blocksPerSec, txsPerSec, blockQueue.size(), elapsed / 1000, totalTxs, totalLogs);
+                }
             }
         }
 
@@ -230,7 +243,7 @@ public class KafkaExporter {
         log.info("Done.");
     }
 
-    private static void processBlock(BlockCapsule block, ExporterConfig config, KafkaProducer<String, byte[]> producer,
+    private static int processBlock(BlockCapsule block, ExporterConfig config, KafkaProducer<String, byte[]> producer,
                                      Schema blockSchema, Schema logSchema, AsyncTracker tracker, Wallet wallet, ExecutorService executor) throws IOException {
         String blockHash = block.getBlockId().toString();
         long blockNum = block.getNum();
@@ -320,6 +333,7 @@ public class KafkaExporter {
             producer.send(new ProducerRecord<>(config.logTopic, logKey, logPayload), tracker.callback);
             tracker.pending.incrementAndGet();
         }
+        return logRecords.size();
     }
 
     private static byte[] serializeAvro(Schema schema, GenericRecord record, int schemaId) throws IOException {
