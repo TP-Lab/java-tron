@@ -212,10 +212,11 @@ public class KafkaExporter {
             if (num % 100 == 0) {
                 long elapsed = System.currentTimeMillis() - startTime;
                 if (elapsed > 0) {
-                   double blocksPerSec = (double)(num - from + 1) * 1000 / elapsed;
+                   double blocksPerSec = (double)(num - finalFrom + 1) * 1000 / elapsed;
                    double txsPerSec = (double) totalTxs * 1000 / elapsed;
-                   log.info("Processed block {} | Speed: {:.2f} blks/s, {:.2f} txs/s | Queue: {}/50 | Elapsed: {}s | Total Txs: {} | Total Logs: {}", 
+                   String msg = String.format("Processed block %d | Speed: %.2f blks/s, %.2f txs/s | Queue: %d/50 | Elapsed: %ds | Total Txs: %d | Total Logs: %d", 
                            num, blocksPerSec, txsPerSec, blockQueue.size(), elapsed / 1000, totalTxs, totalLogs);
+                   log.info(msg);
                 }
             }
         }
