@@ -40,12 +40,14 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -148,6 +150,31 @@ public class KafkaExporter {
         ExecutorService executor = Executors.newFixedThreadPool(config.threads);
         log.info("Initialized thread pool with {} threads", config.threads);
 
+        // Preloading Buffer
+        BlockingQueue<BlockTask> blockQueue = new LinkedBlockingQueue<>(50);
+        
+        Thread preloader = new Thread(() -> {
+            log.info("Preloader started.");
+            for (long num = from; num <= to; num++) {
+                if (tracker.hasError || Thread.currentThread().isInterrupted()) break;
+                try {
+                    BlockCapsule block = chainBaseManager.getBlockByNum(num);
+                    blockQueue.put(new BlockTask(num, block));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    log.error("Error fetching block " + num, e);
+                    // Insert a null-block task or handle error? 
+                    // For now, if fetch fails, we might just put a task with null block or let main loop handle it.
+                    // But simpler to just break? Or continue?
+                    // Let's rely on fail-fast if serious error.
+                }
+            }
+            log.info("Preloader finished.");
+        }, "BlockPreloader");
+        preloader.start();
+
         try {
 
         for (long num = from; num <= to; num++) {
@@ -156,9 +183,17 @@ public class KafkaExporter {
                 throw new RuntimeException("Kafka export failed, stopping execution.", tracker.lastException);
             }
 
-            BlockCapsule block = chainBaseManager.getBlockByNum(num);
+            BlockTask task = null;
+            try {
+                task = blockQueue.take();
+            } catch (InterruptedException e) {
+               Thread.currentThread().interrupt();
+               throw new RuntimeException("Main thread interrupted while waiting for block", e);
+            }
+
+            BlockCapsule block = task.block;
             if (block == null) {
-                log.warn("Block {} not found", num);
+                log.warn("Block {} not found", task.blockNum);
                 continue;
             }
 
@@ -179,6 +214,7 @@ public class KafkaExporter {
         }
 
         } finally {
+            preloader.interrupt(); 
             executor.shutdown();
             try {
                 if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
@@ -461,6 +497,16 @@ public class KafkaExporter {
                     break;
                 }
             }
+        }
+    }
+
+    static class BlockTask {
+        long blockNum;
+        BlockCapsule block;
+
+        public BlockTask(long blockNum, BlockCapsule block) {
+            this.blockNum = blockNum;
+            this.block = block;
         }
     }
 
