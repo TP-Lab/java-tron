@@ -109,6 +109,9 @@ public class TransactionLogTrigger extends Trigger {
   @Getter
   @Setter
   private long energyUnitPrice;
+  @Getter
+  @Setter
+  private String transactionDetail;
 
   @Getter
   @Setter

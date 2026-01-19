@@ -100,7 +100,7 @@ public class CheckInternalTx {
           if (internalTxCount > 0) {
             System.out.println("  Internal TX Details:");
             for (int i = 0; i < internalTxCount; i++) {
-              var internalTx = txInfo.getInternalTransactions(i);
+              Protocol.InternalTransaction internalTx = txInfo.getInternalTransactions(i);
               System.out.println("    [" + i + "] Hash: " + org.bouncycastle.util.encoders.Hex.toHexString(internalTx.getHash().toByteArray()));
               System.out.println("        Rejected: " + internalTx.getRejected());
               System.out.println("        Note: " + internalTx.getNote().toStringUtf8());
