@@ -23,6 +23,7 @@ import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.tron.common.application.TronApplicationContext;
 import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
+import org.tron.common.utils.Sha256Hash;
 import org.tron.core.ChainBaseManager;
 import org.tron.core.Constant;
 import org.tron.core.Wallet;
@@ -38,10 +39,13 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -164,16 +168,38 @@ public class KafkaExporter {
                 if (tracker.hasError || Thread.currentThread().isInterrupted()) break;
                 try {
                     BlockCapsule block = chainBaseManager.getBlockByNum(num);
-                    blockQueue.put(new BlockTask(num, block));
+                    if (block == null) {
+                        blockQueue.put(new BlockTask(num, null));
+                        continue;
+                    }
+
+                    // Deep Prefetch: Fetch TransactionInfos for the block in parallel
+                    List<TransactionCapsule> txs = block.getTransactions();
+                    Map<com.google.protobuf.ByteString, TransactionInfo> txInfos = new ConcurrentHashMap<>(txs.size());
+                    if (!txs.isEmpty()) {
+                        CountDownLatch latch = new CountDownLatch(txs.size());
+                        for (TransactionCapsule tx : txs) {
+                            executor.submit(() -> {
+                                try {
+                                    TransactionInfo info = wallet.getTransactionInfoById(tx.getTransactionId().getByteString());
+                                    if (info != null) {
+                                        txInfos.put(tx.getTransactionId().getByteString(), info);
+                                    }
+                                } catch (Exception e) {
+                                    log.error("Error prefetching tx info for " + tx.getTransactionId().toString(), e);
+                                } finally {
+                                    latch.countDown();
+                                }
+                            });
+                        }
+                        latch.await();
+                    }
+                    blockQueue.put(new BlockTask(num, block, txInfos));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 } catch (Exception e) {
                     log.error("Error fetching block " + num, e);
-                    // Insert a null-block task or handle error? 
-                    // For now, if fetch fails, we might just put a task with null block or let main loop handle it.
-                    // But simpler to just break? Or continue?
-                    // Let's rely on fail-fast if serious error.
                 }
             }
             log.info("Preloader finished.");
@@ -184,6 +210,7 @@ public class KafkaExporter {
 
         long startTime = System.currentTimeMillis();
         long lastReportTime = startTime;
+        long lastReportTxs = 0;
         long totalTxs = 0;
         long totalLogs = 0;
 
@@ -207,7 +234,7 @@ public class KafkaExporter {
                 continue;
             }
 
-            int logsCount = processBlock(block, config, producer, blockSchema, logSchema, tracker, wallet, executor);
+            int logsCount = processBlock(task, config, producer, blockSchema, logSchema, tracker, wallet, executor);
             
             totalTxs += block.getTransactions().size();
             totalLogs += logsCount;
@@ -216,17 +243,20 @@ public class KafkaExporter {
                 long now = System.currentTimeMillis();
                 long elapsedTotal = now - startTime;
                 long elapsedBatch = now - lastReportTime;
+                long txsBatch = totalTxs - lastReportTxs;
                 
                 if (elapsedTotal > 0 && elapsedBatch > 0) {
                    double blocksPerSecBatch = (double) 100 * 1000 / elapsedBatch;
+                   double txsPerSecBatch = (double) txsBatch * 1000 / elapsedBatch;
                    double blocksPerSecTotal = (double)(num - finalFrom + 1) * 1000 / elapsedTotal;
                    double txsPerSecTotal = (double) totalTxs * 1000 / elapsedTotal;
                    
-                   String msg = String.format("Processed block %d | Current: %.2f blks/s | Avg: %.2f blks/s, %.2f txs/s | Queue: %d/50 | Total Txs: %d | Total Logs: %d", 
-                           num, blocksPerSecBatch, blocksPerSecTotal, txsPerSecTotal, blockQueue.size(), totalTxs, totalLogs);
+                   String msg = String.format("Processed block %d | Current: %.2f blks/s, %.2f txs/s | Avg: %.2f blks/s, %.2f txs/s | Queue: %d/50 | Total Txs: %d | Total Logs: %d", 
+                           num, blocksPerSecBatch, txsPerSecBatch, blocksPerSecTotal, txsPerSecTotal, blockQueue.size(), totalTxs, totalLogs);
                    log.info(msg);
                 }
                 lastReportTime = now;
+                lastReportTxs = totalTxs;
             }
         }
 
@@ -256,8 +286,9 @@ public class KafkaExporter {
         log.info("Done.");
     }
 
-    private static int processBlock(BlockCapsule block, ExporterConfig config, KafkaProducer<String, byte[]> producer,
+    private static int processBlock(BlockTask task, ExporterConfig config, KafkaProducer<String, byte[]> producer,
                                      Schema blockSchema, Schema logSchema, AsyncTracker tracker, Wallet wallet, ExecutorService executor) throws IOException {
+        BlockCapsule block = task.block;
         String blockHash = block.getBlockId().toString();
         long blockNum = block.getNum();
         long timestamp = block.getTimeStamp();
@@ -276,10 +307,10 @@ public class KafkaExporter {
                 List<GenericRecord> txLogs = new ArrayList<>();
                 String txHash = Hex.toHexString(tx.getTransactionId().getBytes());
                 
-                // DB Read inside worker thread
-                TransactionInfo info = wallet.getTransactionInfoById(tx.getTransactionId().getByteString());
+                // Use Pre-fetched TransactionInfo
+                TransactionInfo info = task.txInfos.get(tx.getTransactionId().getByteString());
                 if (info == null) {
-                    log.warn("Transaction Info not found for tx: {} in block: {}", txHash, blockNum);
+                    log.warn("Transaction Info not found (pre-fetch missing) for tx: {} in block: {}", txHash, blockNum);
                     return txLogs; 
                 }
 
@@ -548,10 +579,16 @@ public class KafkaExporter {
     static class BlockTask {
         long blockNum;
         BlockCapsule block;
+        Map<com.google.protobuf.ByteString, TransactionInfo> txInfos;
 
         public BlockTask(long blockNum, BlockCapsule block) {
+            this(blockNum, block, new HashMap<>());
+        }
+
+        public BlockTask(long blockNum, BlockCapsule block, Map<com.google.protobuf.ByteString, TransactionInfo> txInfos) {
             this.blockNum = blockNum;
             this.block = block;
+            this.txInfos = txInfos;
         }
     }
 
