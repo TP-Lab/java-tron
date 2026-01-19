@@ -113,8 +113,10 @@ public class KafkaExporter {
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
         props.put(ProducerConfig.ACKS_CONFIG, "1"); // RequireOne
         props.put(ProducerConfig.RETRIES_CONFIG, 3);
-        props.put(ProducerConfig.LINGER_MS_CONFIG, 100);
-        props.put(ProducerConfig.BATCH_SIZE_CONFIG, 16384);
+        props.put(ProducerConfig.LINGER_MS_CONFIG, 200);
+        props.put(ProducerConfig.BATCH_SIZE_CONFIG, 131072); // 128KB
+        props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, 67108864); // 64MB
+        props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "lz4");
 
         KafkaProducer<String, byte[]> producer = new KafkaProducer<>(props);
 
@@ -181,6 +183,7 @@ public class KafkaExporter {
         try {
 
         long startTime = System.currentTimeMillis();
+        long lastReportTime = startTime;
         long totalTxs = 0;
         long totalLogs = 0;
 
@@ -210,14 +213,20 @@ public class KafkaExporter {
             totalLogs += logsCount;
 
             if (num % 100 == 0) {
-                long elapsed = System.currentTimeMillis() - startTime;
-                if (elapsed > 0) {
-                   double blocksPerSec = (double)(num - finalFrom + 1) * 1000 / elapsed;
-                   double txsPerSec = (double) totalTxs * 1000 / elapsed;
-                   String msg = String.format("Processed block %d | Speed: %.2f blks/s, %.2f txs/s | Queue: %d/50 | Elapsed: %ds | Total Txs: %d | Total Logs: %d", 
-                           num, blocksPerSec, txsPerSec, blockQueue.size(), elapsed / 1000, totalTxs, totalLogs);
+                long now = System.currentTimeMillis();
+                long elapsedTotal = now - startTime;
+                long elapsedBatch = now - lastReportTime;
+                
+                if (elapsedTotal > 0 && elapsedBatch > 0) {
+                   double blocksPerSecBatch = (double) 100 * 1000 / elapsedBatch;
+                   double blocksPerSecTotal = (double)(num - finalFrom + 1) * 1000 / elapsedTotal;
+                   double txsPerSecTotal = (double) totalTxs * 1000 / elapsedTotal;
+                   
+                   String msg = String.format("Processed block %d | Current: %.2f blks/s | Avg: %.2f blks/s, %.2f txs/s | Queue: %d/50 | Total Txs: %d | Total Logs: %d", 
+                           num, blocksPerSecBatch, blocksPerSecTotal, txsPerSecTotal, blockQueue.size(), totalTxs, totalLogs);
                    log.info(msg);
                 }
+                lastReportTime = now;
             }
         }
 
@@ -303,41 +312,59 @@ public class KafkaExporter {
             }));
         }
 
-        // Collect results in order
+        // Collect results and assign log_index in order
+        List<List<GenericRecord>> groupedLogs = new ArrayList<>();
         for (Future<List<GenericRecord>> future : futures) {
             try {
                 List<GenericRecord> txLogs = future.get();
                 for (GenericRecord rec : txLogs) {
                     rec.put("log_index", logIndexTotal++);
-                    logRecords.add(rec);
+                }
+                if (!txLogs.isEmpty()) {
+                    groupedLogs.add(txLogs);
                 }
             } catch (InterruptedException | ExecutionException e) {
                 throw new IOException("Error processing transaction", e);
             }
         }
 
-        // Send Block Data
+        // Parallel Serialization and Send
+        List<Future<Void>> sendFutures = new ArrayList<>(groupedLogs.size());
+        for (List<GenericRecord> txLogs : groupedLogs) {
+            sendFutures.add(executor.submit(() -> {
+                for (GenericRecord lr : txLogs) {
+                    String logKey = String.format("%s-%d-%s-%d", config.chainId, blockNum, blockHash, lr.get("log_index"));
+                    byte[] logPayload = serializeAvro(logSchema, lr, LOG_DATA_SCHEMA_ID);
+                    producer.send(new ProducerRecord<>(config.logTopic, logKey, logPayload), tracker.callback);
+                    tracker.pending.incrementAndGet();
+                }
+                return null;
+            }));
+        }
+
+        // Wait for serialization and submission to finish for this block to avoid memory bloat
+        for (Future<Void> f : sendFutures) {
+            try {
+                f.get();
+            } catch (InterruptedException | ExecutionException e) {
+                throw new IOException("Error submitting Kafka messages", e);
+            }
+        }
+
+        // Send Block Data (strictly after logs are submitted)
         GenericRecord blockRecord = new GenericData.Record(blockSchema);
         blockRecord.put("chain_id", config.chainId);
         blockRecord.put("block_number", blockNum);
         blockRecord.put("block_hash", blockHash);
-        blockRecord.put("log_count", (long) logRecords.size());
+        blockRecord.put("log_count", logIndexTotal);
         blockRecord.put("timestamp", timestamp);
 
         String blockKey = String.format("%s-%d-%s", config.chainId, blockNum, blockHash);
         byte[] blockPayload = serializeAvro(blockSchema, blockRecord, BLOCK_DATA_SCHEMA_ID);
-        
         producer.send(new ProducerRecord<>(config.blockTopic, blockKey, blockPayload), tracker.callback);
         tracker.pending.incrementAndGet();
 
-        // Send Logs
-        for (GenericRecord lr : logRecords) {
-            String logKey = String.format("%s-%d-%s-%d", config.chainId, blockNum, blockHash, lr.get("log_index"));
-            byte[] logPayload = serializeAvro(logSchema, lr, LOG_DATA_SCHEMA_ID);
-            producer.send(new ProducerRecord<>(config.logTopic, logKey, logPayload), tracker.callback);
-            tracker.pending.incrementAndGet();
-        }
-        return logRecords.size();
+        return (int) logIndexTotal;
     }
 
     private static byte[] serializeAvro(Schema schema, GenericRecord record, int schemaId) throws IOException {
@@ -439,12 +466,12 @@ public class KafkaExporter {
             if (Args.getInstance().getStorage().getPropertyMap() != null) {
                 Args.getInstance().getStorage().getPropertyMap().values().forEach(prop -> {
                     if (prop.getDbOptions() != null) {
-                        // Increase cache size to 512MB (since machine has 60GB RAM)
-                        // With ~20 DB instances, this consumes ~10GB of off-heap memory
-                        prop.getDbOptions().cacheSize(512 * 1024 * 1024L); 
+                        // Increase cache size to 1GB (since machine has 60GB RAM)
+                        // With ~20 DB instances, this consumes ~20GB of off-heap memory
+                        prop.getDbOptions().cacheSize(1024 * 1024 * 1024L); 
                     }
                 });
-                log.info("Optimized RocksDB cache size to 512MB per db");
+                log.info("Optimized RocksDB cache size to 1GB per db");
             }
         }
     }
