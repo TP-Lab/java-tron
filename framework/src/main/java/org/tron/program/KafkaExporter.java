@@ -491,12 +491,13 @@ public class KafkaExporter {
 
         System.setProperty("database.readonly", "true");
         System.setProperty("storage.readonly", "true");
-        
+
         // Setup args
         Args.setParam(new String[]{"-c", config.configFile}, Constant.TESTNET_CONF);
         normalizeStorageDirectories();
 
         if (Args.getInstance().getStorage() != null) {
+            // 禁用所有写入操作
             Args.getInstance().getStorage().setDbSync(false);
             Args.getInstance().getStorage().setMaxFlushCount(0);
 
@@ -512,6 +513,9 @@ public class KafkaExporter {
 
                         // 增加 max_open_files 以提高随机读性能 (LevelDB 和 RocksDB 都支持)
                         prop.getDbOptions().maxOpenFiles(-1);
+
+                        // 禁用写操作相关的缓冲
+                        prop.getDbOptions().writeBufferSize(4 * 1024); // 最小化写缓冲 4KB
 
                         // RocksDB 特有的优化（LevelDB 不支持这些方法）
                         if ("ROCKSDB".equalsIgnoreCase(dbEngine)) {
@@ -529,7 +533,7 @@ public class KafkaExporter {
                         }
                     }
                 });
-                log.info("Optimized DB ({}) - cache=1GB, max_open_files=-1", dbEngine);
+                log.info("Optimized DB ({}) - cache=1GB, max_open_files=-1, write_buffer=4KB", dbEngine);
             }
         }
     }
@@ -664,21 +668,24 @@ public class KafkaExporter {
      */
     private static Object extractDbInstance(Object obj) {
         try {
-            // 尝试获取底层数据库实例
-            try {
-                java.lang.reflect.Method getDbSourceMethod = obj.getClass().getMethod("getDbSource");
-                Object dbSource = getDbSourceMethod.invoke(obj);
-                if (dbSource != null) {
-                    java.lang.reflect.Method getDbMethod = dbSource.getClass().getMethod("getDb");
-                    return getDbMethod.invoke(dbSource);
-                }
-            } catch (Exception e) {
-                // 尝试直接访问 db 字段
+            // TronStoreWithRevoking 有 getDb() 方法直接返回底层 DB
+            java.lang.reflect.Method getDbMethod = obj.getClass().getMethod("getDb");
+            Object db = getDbMethod.invoke(obj);
+            if (db != null) {
+                // 检查是否是 LevelDB 或 RocksDB 的包装类
+                // 可能返回的是 org.tron.common.storage.leveldb.LevelDB 或 org.tron.common.storage.rocksdb.RocksDB
+                // 需要进一步获取原生数据库实例
                 try {
-                    java.lang.reflect.Field dbField = obj.getClass().getDeclaredField("db");
+                    // 尝试获取 database 字段（LevelDB 和 RocksDB 包装类都有这个字段）
+                    java.lang.reflect.Field dbField = db.getClass().getDeclaredField("database");
                     dbField.setAccessible(true);
-                    return dbField.get(obj);
-                } catch (Exception ignored) {
+                    Object nativeDb = dbField.get(db);
+                    if (nativeDb != null) {
+                        return nativeDb;
+                    }
+                } catch (Exception e) {
+                    // 如果没有 database 字段，直接返回 db 对象
+                    return db;
                 }
             }
         } catch (Exception e) {
