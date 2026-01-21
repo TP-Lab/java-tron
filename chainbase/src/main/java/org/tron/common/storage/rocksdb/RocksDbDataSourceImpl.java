@@ -189,7 +189,7 @@ public class RocksDbDataSourceImpl extends DbStat implements DbSourceInter<byte[
     }
     engine = PropUtil.readProperty(enginePath, KEY_ENGINE);
 
-    return ROCKSDB.equals(engine);
+    return ROCKSDB.equals(engine) || "LEVELDB".equalsIgnoreCase(engine);
   }
 
   public void initDB() {

@@ -38,7 +38,21 @@ public class RocksDbSettings {
     RocksDB.loadLibrary();
   }
 
-  private static final LRUCache cache = new LRUCache(1 * 1024 * 1024 * 1024L);
+  private static final LRUCache cache;
+
+  static {
+      long cacheSize = 1 * 1024 * 1024 * 1024L; // Default 1GB
+      String customSize = System.getProperty("rocksdb.block.cache.size");
+      if (customSize != null && !customSize.isEmpty()) {
+          try {
+              cacheSize = Long.parseLong(customSize);
+              org.slf4j.LoggerFactory.getLogger(RocksDbSettings.class).info("Using custom RocksDB Block Cache Size: {} bytes", cacheSize);
+          } catch (NumberFormatException e) {
+             // ignore
+          }
+      }
+      cache = new LRUCache(cacheSize);
+  }
 
   private RocksDbSettings() {
 
