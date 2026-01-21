@@ -115,8 +115,10 @@ public class KafkaExporter {
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, config.kafkaBrokers);
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
-        props.put(ProducerConfig.ACKS_CONFIG, "1"); // RequireOne
-        props.put(ProducerConfig.RETRIES_CONFIG, 3);
+        props.put(ProducerConfig.ACKS_CONFIG, "all"); // RequireAll for strict safety
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
+        props.put(ProducerConfig.RETRIES_CONFIG, Integer.MAX_VALUE);
+        props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5); // Default for idempotence
         props.put(ProducerConfig.LINGER_MS_CONFIG, 200);
         props.put(ProducerConfig.BATCH_SIZE_CONFIG, 131072); // 128KB
         props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, 67108864); // 64MB
@@ -528,6 +530,7 @@ public class KafkaExporter {
             } else {
                  log.warn("Storage property map is empty, cannot optimize cache size.");
             }
+    }
     }
 
     private static void normalizeStorageDirectories() {
