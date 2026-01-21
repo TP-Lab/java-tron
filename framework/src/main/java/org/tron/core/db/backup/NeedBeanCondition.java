@@ -10,6 +10,6 @@ public class NeedBeanCondition implements Condition {
   @Override
   public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
     return ("ROCKSDB".equals(Args.getInstance().getStorage().getDbEngine().toUpperCase()))
-        && Args.getInstance().getDbBackupConfig().isEnable() && !Args.getInstance().isWitness();
+        && Args.getInstance().getDbBackupConfig() != null && Args.getInstance().getDbBackupConfig().isEnable() && !Args.getInstance().isWitness();
   }
 }
