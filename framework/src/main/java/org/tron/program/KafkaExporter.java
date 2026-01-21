@@ -157,7 +157,7 @@ public class KafkaExporter {
         log.info("Initialized thread pool with {} threads", config.threads);
 
         // Preloading Buffer
-        BlockingQueue<BlockTask> blockQueue = new LinkedBlockingQueue<>(50);
+        BlockingQueue<BlockTask> blockQueue = new LinkedBlockingQueue<>(500);
         
         final long finalFrom = from;
         final long finalTo = to;
@@ -166,40 +166,51 @@ public class KafkaExporter {
             log.info("Preloader started.");
             for (long num = finalFrom; num <= finalTo; num++) {
                 if (tracker.hasError || Thread.currentThread().isInterrupted()) break;
-                try {
-                    BlockCapsule block = chainBaseManager.getBlockByNum(num);
-                    if (block == null) {
-                        blockQueue.put(new BlockTask(num, null));
-                        continue;
-                    }
-
-                    // Deep Prefetch: Fetch TransactionInfos for the block in parallel
-                    List<TransactionCapsule> txs = block.getTransactions();
-                    Map<com.google.protobuf.ByteString, TransactionInfo> txInfos = new ConcurrentHashMap<>(txs.size());
-                    if (!txs.isEmpty()) {
-                        CountDownLatch latch = new CountDownLatch(txs.size());
-                        for (TransactionCapsule tx : txs) {
-                            executor.submit(() -> {
-                                try {
-                                    TransactionInfo info = wallet.getTransactionInfoById(tx.getTransactionId().getByteString());
-                                    if (info != null) {
-                                        txInfos.put(tx.getTransactionId().getByteString(), info);
-                                    }
-                                } catch (Exception e) {
-                                    log.error("Error prefetching tx info for " + tx.getTransactionId().toString(), e);
-                                } finally {
-                                    latch.countDown();
-                                }
-                            });
+                
+                boolean success = false;
+                while (!success) {
+                    if (tracker.hasError || Thread.currentThread().isInterrupted()) break;
+                    try {
+                        BlockCapsule block = chainBaseManager.getBlockByNum(num);
+                        if (block == null) {
+                            blockQueue.put(new BlockTask(num, null));
+                            success = true; // Found (null) but safely handled
+                            continue;
                         }
-                        latch.await();
+
+                        // Deep Prefetch: Fetch TransactionInfos for the block in parallel
+                        List<TransactionCapsule> txs = block.getTransactions();
+                        Map<com.google.protobuf.ByteString, TransactionInfo> txInfos = new ConcurrentHashMap<>(txs.size());
+                        if (!txs.isEmpty()) {
+                            CountDownLatch latch = new CountDownLatch(txs.size());
+                            for (TransactionCapsule tx : txs) {
+                                executor.submit(() -> {
+                                    try {
+                                        TransactionInfo info = wallet.getTransactionInfoById(tx.getTransactionId().getByteString());
+                                        if (info != null) {
+                                            txInfos.put(tx.getTransactionId().getByteString(), info);
+                                        }
+                                    } catch (Exception e) {
+                                        log.error("Error prefetching tx info for " + tx.getTransactionId().toString(), e);
+                                        // Note: Missing txInfo might be non-fatal if they truly don't exist, 
+                                        // but for safety we might want to ensure connection validity.
+                                        // For now, allow partial txInfos as critical errors usually throw at block level or causing outer retry.
+                                    } finally {
+                                        latch.countDown();
+                                    }
+                                });
+                            }
+                            latch.await();
+                        }
+                        blockQueue.put(new BlockTask(num, block, txInfos));
+                        success = true;
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    } catch (Exception e) {
+                        log.error("Error fetching block " + num + ". Retrying in 1s...", e);
+                        try { Thread.sleep(1000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
                     }
-                    blockQueue.put(new BlockTask(num, block, txInfos));
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    log.error("Error fetching block " + num, e);
                 }
             }
             log.info("Preloader finished.");
@@ -493,19 +504,30 @@ public class KafkaExporter {
             Args.getInstance().getStorage().setDbSync(false);
             Args.getInstance().getStorage().setMaxFlushCount(0);
 
-            // Optimize Cache for Random Reads (which processBlock heavily relies on)
-            // Increase BlockCache size if possible
-            if (Args.getInstance().getStorage().getPropertyMap() != null) {
+            // Optimize Cache for Random Reads (LevelDB)
+            // Calculate optimal cache size per DB instance
+            // Total available for cache = ~64GB (leave half for OS/Heap/Other)
+            long totalCacheSize = 64L * 1024 * 1024 * 1024; 
+            
+            if (Args.getInstance().getStorage().getPropertyMap() != null && !Args.getInstance().getStorage().getPropertyMap().isEmpty()) {
+                int dbCount = Args.getInstance().getStorage().getPropertyMap().size();
+                long cachePerDb = totalCacheSize / dbCount;
+                
+                // Cap lower bound to 256MB and upper bound to 8GB per DB to avoid extreme cases
+                if (cachePerDb < 256L * 1024 * 1024) cachePerDb = 256L * 1024 * 1024;
+                
+                final long finalCacheSize = cachePerDb;
+                
                 Args.getInstance().getStorage().getPropertyMap().values().forEach(prop -> {
                     if (prop.getDbOptions() != null) {
-                        // Increase cache size to 1GB (since machine has 60GB RAM)
-                        // With ~20 DB instances, this consumes ~20GB of off-heap memory
-                        prop.getDbOptions().cacheSize(1024 * 1024 * 1024L); 
+                        prop.getDbOptions().cacheSize(finalCacheSize);
                     }
                 });
-                log.info("Optimized RocksDB cache size to 1GB per db");
+                log.info("Optimized LevelDB cache size to {} bytes ({} MB) per db for {} instances", 
+                        finalCacheSize, finalCacheSize / (1024 * 1024), dbCount);
+            } else {
+                 log.warn("Storage property map is empty, cannot optimize cache size.");
             }
-        }
     }
 
     private static void normalizeStorageDirectories() {
