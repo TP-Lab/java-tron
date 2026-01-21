@@ -560,8 +560,6 @@ public class KafkaExporter {
 
             log.info("Total Cache Target: {} GB | Estimated DBs: {} | Cache Per DB: {} MB", 
                     totalCacheSize / (1024*1024*1024), dbCount, finalCacheSize / (1024 * 1024));
-        }
-    }
     }
 
     private static void normalizeStorageDirectories() {
