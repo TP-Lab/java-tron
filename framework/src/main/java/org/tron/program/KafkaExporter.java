@@ -665,29 +665,50 @@ public class KafkaExporter {
 
     /**
      * 从数据库对象中提取底层数据库实例
+     *
+     * Tron 的数据库包装层次结构：
+     * TronStoreWithRevoking.getDb()
+     *   → org.tron.core.db2.common.LevelDB (包装层1)
+     *     → LevelDbDataSourceImpl (包装层2, 字段名: db)
+     *       → org.iq80.leveldb.DB (原生实例, 字段名: database)
      */
     private static Object extractDbInstance(Object obj) {
         try {
-            // TronStoreWithRevoking 有 getDb() 方法直接返回底层 DB
+            // 第一层：TronStoreWithRevoking.getDb() → org.tron.core.db2.common.LevelDB
             java.lang.reflect.Method getDbMethod = obj.getClass().getMethod("getDb");
-            Object db = getDbMethod.invoke(obj);
-            if (db != null) {
-                // 检查是否是 LevelDB 或 RocksDB 的包装类
-                // 可能返回的是 org.tron.common.storage.leveldb.LevelDB 或 org.tron.common.storage.rocksdb.RocksDB
-                // 需要进一步获取原生数据库实例
-                try {
-                    // 尝试获取 database 字段（LevelDB 和 RocksDB 包装类都有这个字段）
-                    java.lang.reflect.Field dbField = db.getClass().getDeclaredField("database");
-                    dbField.setAccessible(true);
-                    Object nativeDb = dbField.get(db);
-                    if (nativeDb != null) {
-                        return nativeDb;
-                    }
-                } catch (Exception e) {
-                    // 如果没有 database 字段，直接返回 db 对象
-                    return db;
-                }
+            Object wrappedDb = getDbMethod.invoke(obj);
+            if (wrappedDb == null) {
+                return null;
             }
+
+            // 第二层：org.tron.core.db2.common.LevelDB.db → LevelDbDataSourceImpl
+            Object dataSource = null;
+            try {
+                java.lang.reflect.Field dbField = wrappedDb.getClass().getDeclaredField("db");
+                dbField.setAccessible(true);
+                dataSource = dbField.get(wrappedDb);
+            } catch (NoSuchFieldException e) {
+                // 可能直接就是 DataSource，跳过这一层
+                dataSource = wrappedDb;
+            }
+
+            if (dataSource == null) {
+                return null;
+            }
+
+            // 第三层：LevelDbDataSourceImpl.database → org.iq80.leveldb.DB (原生)
+            try {
+                java.lang.reflect.Field databaseField = dataSource.getClass().getDeclaredField("database");
+                databaseField.setAccessible(true);
+                Object nativeDb = databaseField.get(dataSource);
+                if (nativeDb != null) {
+                    return nativeDb;
+                }
+            } catch (NoSuchFieldException e) {
+                // 如果没有 database 字段，返回 dataSource 本身
+                return dataSource;
+            }
+
         } catch (Exception e) {
             // Skip
         }
