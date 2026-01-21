@@ -150,6 +150,14 @@ public class KafkaExporter {
         }
 
         logDatabaseInfo(chainBaseManager, from, to);
+
+        // Pre-compaction if requested
+        if (config.preCompact) {
+            log.info("Pre-compaction requested. Starting full database compaction...");
+            performFullCompaction(chainBaseManager);
+            log.info("Pre-compaction completed. Starting data export...");
+        }
+
         log.info("Starting processing from {} to {}", from, to);
 
         AsyncTracker tracker = new AsyncTracker();
@@ -495,14 +503,33 @@ public class KafkaExporter {
             // Optimize Cache for Random Reads (which processBlock heavily relies on)
             // Increase BlockCache size if possible
             if (Args.getInstance().getStorage().getPropertyMap() != null) {
+                String dbEngine = Args.getInstance().getStorage().getDbEngine();
                 Args.getInstance().getStorage().getPropertyMap().values().forEach(prop -> {
                     if (prop.getDbOptions() != null) {
                         // Increase cache size to 1GB (since machine has 60GB RAM)
                         // With ~20 DB instances, this consumes ~20GB of off-heap memory
-                        prop.getDbOptions().cacheSize(1024 * 1024 * 1024L); 
+                        prop.getDbOptions().cacheSize(1024 * 1024 * 1024L);
+
+                        // 增加 max_open_files 以提高随机读性能 (LevelDB 和 RocksDB 都支持)
+                        prop.getDbOptions().maxOpenFiles(-1);
+
+                        // RocksDB 特有的优化（LevelDB 不支持这些方法）
+                        if ("ROCKSDB".equalsIgnoreCase(dbEngine)) {
+                            try {
+                                // 禁用自动 compaction 以避免快照读取时触发压缩
+                                prop.getDbOptions().getClass().getMethod("disableAutoCompaction", boolean.class)
+                                    .invoke(prop.getDbOptions(), true);
+                                // 优化随机读取
+                                prop.getDbOptions().getClass().getMethod("adviseRandomOnOpen", boolean.class)
+                                    .invoke(prop.getDbOptions(), true);
+                                log.info("RocksDB optimizations applied: auto-compaction disabled");
+                            } catch (Exception e) {
+                                log.warn("Failed to apply RocksDB-specific optimizations: {}", e.getMessage());
+                            }
+                        }
                     }
                 });
-                log.info("Optimized RocksDB cache size to 1GB per db");
+                log.info("Optimized DB ({}) - cache=1GB, max_open_files=-1", dbEngine);
             }
         }
     }
@@ -545,6 +572,149 @@ public class KafkaExporter {
             return Paths.get(storageDirectory).toString();
         }
         return Paths.get(outputDirectory, storageDirectory).toString();
+    }
+
+    /**
+     * 手动触发全量 compaction，优化后续读取性能
+     * 支持 LevelDB 和 RocksDB 引擎
+     */
+    private static void performFullCompaction(ChainBaseManager chainBaseManager) {
+        try {
+            String dbEngine = Args.getInstance().getStorage().getDbEngine();
+            log.info("========================================");
+            log.info("Starting full compaction for {} engine", dbEngine);
+            log.info("========================================");
+
+            long startTime = System.currentTimeMillis();
+            int compactedDbs = 0;
+            int totalDbs = 0;
+            List<String> dbNames = new ArrayList<>();
+
+            // 第一遍：收集所有数据库实例
+            java.lang.reflect.Field[] fields = chainBaseManager.getClass().getDeclaredFields();
+            for (java.lang.reflect.Field field : fields) {
+                field.setAccessible(true);
+                try {
+                    Object obj = field.get(chainBaseManager);
+                    if (obj == null) continue;
+
+                    Object dbInstance = extractDbInstance(obj);
+                    if (dbInstance != null) {
+                        dbNames.add(field.getName());
+                        totalDbs++;
+                    }
+                } catch (Exception e) {
+                    // Skip
+                }
+            }
+
+            log.info("Found {} databases to compact", totalDbs);
+            log.info("----------------------------------------");
+
+            // 第二遍：执行压缩并显示进度
+            for (java.lang.reflect.Field field : fields) {
+                field.setAccessible(true);
+                try {
+                    Object obj = field.get(chainBaseManager);
+                    if (obj == null) continue;
+
+                    Object dbInstance = extractDbInstance(obj);
+                    if (dbInstance != null) {
+                        String dbName = field.getName();
+                        compactedDbs++;
+
+                        long dbStartTime = System.currentTimeMillis();
+                        log.info("[{}/{}] Compacting: {} ...", compactedDbs, totalDbs, dbName);
+
+                        compactDatabase(dbInstance, dbName, dbEngine);
+
+                        long dbDuration = System.currentTimeMillis() - dbStartTime;
+                        double progress = (compactedDbs * 100.0) / totalDbs;
+                        long totalElapsed = System.currentTimeMillis() - startTime;
+                        long estimatedTotal = totalDbs > 0 ? (totalElapsed * totalDbs / compactedDbs) : 0;
+                        long estimatedRemaining = estimatedTotal - totalElapsed;
+
+                        log.info("  ✓ {} completed in {} ms ({} s)",
+                                 dbName, dbDuration, dbDuration / 1000);
+                        log.info("  Progress: {}/{} ({:.1f}%) | Elapsed: {} s | ETA: {} s",
+                                 compactedDbs, totalDbs, progress,
+                                 totalElapsed / 1000, estimatedRemaining / 1000);
+                        log.info("----------------------------------------");
+                    }
+                } catch (Exception e) {
+                    log.debug("Skipping field {}: {}", field.getName(), e.getMessage());
+                }
+            }
+
+            long duration = System.currentTimeMillis() - startTime;
+            log.info("========================================");
+            log.info("Full compaction completed!");
+            log.info("  Databases compacted: {}", compactedDbs);
+            log.info("  Total time: {} ms ({} seconds)", duration, duration / 1000);
+            log.info("  Average time per DB: {} ms", compactedDbs > 0 ? duration / compactedDbs : 0);
+            log.info("========================================");
+
+        } catch (Exception e) {
+            log.error("Error during pre-compaction (continuing anyway): {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 从数据库对象中提取底层数据库实例
+     */
+    private static Object extractDbInstance(Object obj) {
+        try {
+            // 尝试获取底层数据库实例
+            try {
+                java.lang.reflect.Method getDbSourceMethod = obj.getClass().getMethod("getDbSource");
+                Object dbSource = getDbSourceMethod.invoke(obj);
+                if (dbSource != null) {
+                    java.lang.reflect.Method getDbMethod = dbSource.getClass().getMethod("getDb");
+                    return getDbMethod.invoke(dbSource);
+                }
+            } catch (Exception e) {
+                // 尝试直接访问 db 字段
+                try {
+                    java.lang.reflect.Field dbField = obj.getClass().getDeclaredField("db");
+                    dbField.setAccessible(true);
+                    return dbField.get(obj);
+                } catch (Exception ignored) {
+                }
+            }
+        } catch (Exception e) {
+            // Skip
+        }
+        return null;
+    }
+
+    /**
+     * 对单个数据库实例执行 compaction
+     */
+    private static void compactDatabase(Object dbInstance, String dbName, String dbEngine) {
+        try {
+            // LevelDB: org.iq80.leveldb.DB.compactRange(byte[] begin, byte[] end)
+            // RocksDB: org.rocksdb.RocksDB.compactRange()
+
+            if ("LEVELDB".equalsIgnoreCase(dbEngine)) {
+                // LevelDB compaction: compactRange(null, null) 表示全范围压缩
+                java.lang.reflect.Method compactMethod = dbInstance.getClass().getMethod("compactRange", byte[].class, byte[].class);
+                compactMethod.invoke(dbInstance, null, null);
+
+            } else if ("ROCKSDB".equalsIgnoreCase(dbEngine)) {
+                // RocksDB compaction: compactRange()
+                try {
+                    java.lang.reflect.Method compactMethod = dbInstance.getClass().getMethod("compactRange");
+                    compactMethod.invoke(dbInstance);
+                } catch (NoSuchMethodException e) {
+                    // 尝试带参数的版本
+                    java.lang.reflect.Method compactMethod = dbInstance.getClass().getMethod("compactRange", byte[].class, byte[].class);
+                    compactMethod.invoke(dbInstance, null, null);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("  ✗ Failed to compact {}: {}", dbName, e.getMessage());
+            throw new RuntimeException("Compaction failed for " + dbName, e);
+        }
     }
 
     static class AsyncTracker {
@@ -616,6 +786,9 @@ public class KafkaExporter {
 
         @Parameter(names = {"--threads"}, description = "Number of threads for parallel processing")
         int threads = 16;
+
+        @Parameter(names = {"--pre-compact"}, description = "Run full compaction before exporting to optimize read performance")
+        boolean preCompact = false;
 
         @Parameter(names = "--help", help = true)
         boolean help;
