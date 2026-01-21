@@ -264,8 +264,25 @@ public class RocksDbDataSourceImpl extends DbStat implements DbSourceInter<byte[
             Files.createDirectories(dbPath.getParent());
           }
 
+          // Check for ReadOnly mode
+          boolean readOnly = Boolean.getBoolean("database.readonly");
+          // Check for Direct IO
+          boolean directReads = Boolean.getBoolean("storage.db.directReads");
+
+          if (directReads) {
+            options.setUseDirectReads(true);
+            options.setUseDirectIoForFlushAndCompaction(true);
+            logger.info("Enabling Direct IO for database {}", dataBaseName);
+          }
+
           try {
-            database = RocksDB.open(options, dbPath.toString());
+            if (readOnly) {
+              // Open in Read-Only mode
+              database = RocksDB.openReadOnly(options, dbPath.toString());
+              logger.info("Opened database {} in Read-Only mode.", dataBaseName);
+            } else {
+              database = RocksDB.open(options, dbPath.toString());
+            }
           } catch (RocksDBException e) {
             if (Objects.equals(e.getStatus().getCode(), Status.Code.Corruption)) {
               logger.error("Database {} corrupted, please delete database directory({}) " +
