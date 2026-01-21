@@ -144,6 +144,7 @@ public class Storage {
   @Setter
   private boolean checkpointSync;
 
+  @Getter
   private Options defaultDbOptions;
 
   @Getter

@@ -508,28 +508,59 @@ public class KafkaExporter {
 
             // Optimize Cache for Random Reads (LevelDB)
             // Calculate optimal cache size per DB instance
-            // Total available for cache = ~64GB (leave half for OS/Heap/Other)
-            long totalCacheSize = 64L * 1024 * 1024 * 1024; 
+            // Total available for cache = ~64GB (leave half for 128GB machine)
+            long totalCacheSize = 64L * 1024 * 1024 * 1024;
             
+            // Estimate DB count. Default to 25 if property map is empty (typical Tron node has ~25 DBs)
+            int dbCount = 25;
             if (Args.getInstance().getStorage().getPropertyMap() != null && !Args.getInstance().getStorage().getPropertyMap().isEmpty()) {
-                int dbCount = Args.getInstance().getStorage().getPropertyMap().size();
-                long cachePerDb = totalCacheSize / dbCount;
-                
-                // Cap lower bound to 256MB and upper bound to 8GB per DB to avoid extreme cases
-                if (cachePerDb < 256L * 1024 * 1024) cachePerDb = 256L * 1024 * 1024;
-                
-                final long finalCacheSize = cachePerDb;
-                
+                dbCount = Math.max(dbCount, Args.getInstance().getStorage().getPropertyMap().size());
+            }
+
+            long cachePerDb = totalCacheSize / dbCount;
+            // Cap to [256MB, 8GB]
+            if (cachePerDb < 256L * 1024 * 1024) cachePerDb = 256L * 1024 * 1024;
+            if (cachePerDb > 8L * 1024 * 1024 * 1024) cachePerDb = 8L * 1024 * 1024 * 1024;
+
+            final long finalCacheSize = cachePerDb;
+            final int finalMaxOpenFiles = 4096; // Increase from default 100 to reduce thrashing on 1.5TB DB
+
+            // Apply to DEFAULT options
+            if (Args.getInstance().getStorage().getDefaultDbOptions() != null) {
+                Args.getInstance().getStorage().getDefaultDbOptions().cacheSize(finalCacheSize);
+                Args.getInstance().getStorage().getDefaultDbOptions().maxOpenFiles(finalMaxOpenFiles);
+                Args.getInstance().getStorage().getDefaultDbOptions().createIfMissing(false); // Safety
+                Args.getInstance().getStorage().getDefaultDbOptions().verifyChecksums(false); // IO Opt
+                Args.getInstance().getStorage().getDefaultDbOptions().paranoidChecks(false); // IO Opt
+                log.info("Optimized DEFAULT LevelDB: cache={} MB, maxOpenFiles={}", 
+                        finalCacheSize / (1024 * 1024), finalMaxOpenFiles);
+            } else {
+                log.warn("DefaultDbOptions is null, could not set default cache size!");
+            }
+
+            // Apply to specific overrides if any
+            if (Args.getInstance().getStorage().getPropertyMap() != null) {
                 Args.getInstance().getStorage().getPropertyMap().values().forEach(prop -> {
                     if (prop.getDbOptions() != null) {
                         prop.getDbOptions().cacheSize(finalCacheSize);
+                        prop.getDbOptions().maxOpenFiles(finalMaxOpenFiles);
+                        prop.getDbOptions().createIfMissing(false);
+                        prop.getDbOptions().verifyChecksums(false);
+                        prop.getDbOptions().paranoidChecks(false);
                     }
                 });
-                log.info("Optimized LevelDB cache size to {} bytes ({} MB) per db for {} instances", 
-                        finalCacheSize, finalCacheSize / (1024 * 1024), dbCount);
-            } else {
-                 log.warn("Storage property map is empty, cannot optimize cache size.");
             }
+            
+            // Enable TxCache Initialization Optimization
+            Args.getInstance().getStorage().setTxCacheInitOptimization(true);
+            // Disable Checkpoint Sync
+            Args.getInstance().getStorage().setCheckpointSync(false);
+            
+            log.info("Enabled TxCache Init Optimization & Disabled Checkpoint Sync.");
+
+            log.info("Total Cache Target: {} GB | Estimated DBs: {} | Cache Per DB: {} MB", 
+                    totalCacheSize / (1024*1024*1024), dbCount, finalCacheSize / (1024 * 1024));
+        }
     }
     }
 
