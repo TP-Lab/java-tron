@@ -483,7 +483,6 @@ public class KafkaExporter {
 
         System.setProperty("database.readonly", "true");
         System.setProperty("storage.readonly", "true");
-        System.setProperty("storage.db.directReads", "true");
         
         // Setup args
         Args.setParam(new String[]{"-c", config.configFile}, Constant.TESTNET_CONF);
