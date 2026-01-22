@@ -304,12 +304,12 @@ public class BlockTransactionPrinter {
       props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
       props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
 
-      // Producer configuration for reliability
+      // Producer configuration for high throughput
       props.put(ProducerConfig.ACKS_CONFIG, "1"); // Wait for leader acknowledgment
       props.put(ProducerConfig.RETRIES_CONFIG, 3);
-      props.put(ProducerConfig.BATCH_SIZE_CONFIG, 16384);
-      props.put(ProducerConfig.LINGER_MS_CONFIG, 1);
-      props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, 33554432);
+      props.put(ProducerConfig.BATCH_SIZE_CONFIG, 65536); // Increased from 16384 to 64KB
+      props.put(ProducerConfig.LINGER_MS_CONFIG, 10); // Increased from 1ms to 10ms for better batching
+      props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, 67108864); // Increased from 32MB to 64MB
 
       // Enable gzip compression for better network efficiency
       props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "gzip");
@@ -1625,7 +1625,8 @@ public class BlockTransactionPrinter {
       SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
       // Process blocks in batches to avoid memory issues
-      long batchSize = 1000;
+      // Larger batch size reduces batch switching overhead and improves throughput
+      long batchSize = 5000;
       for (long currentStart = startBlockNum; currentStart <= endBlockNum; currentStart += batchSize) {
         long currentEnd = Math.min(currentStart + batchSize - 1, endBlockNum);
         long limit = currentEnd - currentStart + 1;
