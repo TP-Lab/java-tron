@@ -53,6 +53,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 // Kafka imports
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -1640,31 +1641,54 @@ public class BlockTransactionPrinter {
         totalBlocks += blocks.size();
 
         // Track batch processing for statistics
-        int batchTransactions = 0;
-        long lastBlockInBatch = currentStart; // Default to current start
+        AtomicInteger batchTransactions = new AtomicInteger(0);
+        AtomicLong lastBlockInBatch = new AtomicLong(currentStart); // Default to current start
 
-        // Process each block
+        // PERFORMANCE OPTIMIZATION: Process blocks concurrently for maximum CPU/memory utilization
+        // This allows multiple blocks to be processed simultaneously, maximizing throughput
+        List<CompletableFuture<Void>> blockFutures = new ArrayList<>();
+
         for (BlockCapsule block : blocks) {
-          long blockNum = block.getNum();
-          String blockId = block.getBlockId().toString();
-          long timestamp = block.getTimeStamp();
-          lastBlockInBatch = blockNum; // Track the last block number in this batch
+          final long blockNum = block.getNum();
+          final String blockId = block.getBlockId().toString();
+          final long timestamp = block.getTimeStamp();
+          final List<TransactionCapsule> transactions = block.getTransactions();
 
-          // Process transactions in the block
-          List<TransactionCapsule> transactions = block.getTransactions();
-          totalTransactions += transactions.size();
-          batchTransactions += transactions.size();
+          // Submit each block for concurrent processing
+          CompletableFuture<Void> blockFuture = CompletableFuture.runAsync(() -> {
+            try {
+              // Log block processing details
+              logger.debug("Processing Block #{} with {} transactions", blockNum, transactions.size());
 
-          // Log block processing details
-          logger.debug("Processing Block #{} with {} transactions", blockNum, transactions.size());
+              // Process transactions in the block concurrently
+              processTransactionsConcurrently(transactions, blockId, blockNum, timestamp,
+                                             outputFormat, useKafka, kafkaTopic, wallet, chainBaseManager);
 
-          // Use concurrent processing for transactions within the block
-          processTransactionsConcurrently(transactions, blockId, blockNum, timestamp,
-                                         outputFormat, useKafka, kafkaTopic, wallet, chainBaseManager);
+              // Update counters atomically
+              batchTransactions.addAndGet(transactions.size());
+              lastBlockInBatch.set(blockNum);
+
+            } catch (Exception e) {
+              logger.error("Error processing block {}: {}", blockNum, e.getMessage(), e);
+            }
+          }, transactionExecutor);
+
+          blockFutures.add(blockFuture);
+        }
+
+        // Wait for all blocks in this batch to complete
+        try {
+          CompletableFuture<Void> allBlocksFuture = CompletableFuture.allOf(
+              blockFutures.toArray(new CompletableFuture[0]));
+          allBlocksFuture.get(); // Block until all blocks are processed
+          logger.debug("All {} blocks in batch processed successfully", blocks.size());
+        } catch (Exception e) {
+          logger.error("Error waiting for block batch processing to complete: {}", e.getMessage(), e);
         }
 
         // Update statistics after processing each batch
-        updateStatistics(blocks.size(), batchTransactions, lastBlockInBatch);
+        totalTransactions += batchTransactions.get();
+        updateStatistics(blocks.size(), batchTransactions.get(), lastBlockInBatch.get());
       }
 
       // Log and print final statistics
