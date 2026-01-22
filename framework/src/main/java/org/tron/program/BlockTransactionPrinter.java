@@ -1648,6 +1648,13 @@ public class BlockTransactionPrinter {
         // This allows multiple blocks to be processed simultaneously, maximizing throughput
         List<CompletableFuture<Void>> blockFutures = new ArrayList<>();
 
+        // Capture variables as final for lambda expressions
+        final String finalOutputFormat = outputFormat;
+        final boolean finalUseKafka = useKafka;
+        final String finalKafkaTopic = kafkaTopic;
+        final Wallet finalWallet = wallet;
+        final ChainBaseManager finalChainBaseManager = chainBaseManager;
+
         for (BlockCapsule block : blocks) {
           final long blockNum = block.getNum();
           final String blockId = block.getBlockId().toString();
@@ -1662,7 +1669,8 @@ public class BlockTransactionPrinter {
 
               // Process transactions in the block concurrently
               processTransactionsConcurrently(transactions, blockId, blockNum, timestamp,
-                                             outputFormat, useKafka, kafkaTopic, wallet, chainBaseManager);
+                                             finalOutputFormat, finalUseKafka, finalKafkaTopic,
+                                             finalWallet, finalChainBaseManager);
 
               // Update counters atomically
               batchTransactions.addAndGet(transactions.size());
