@@ -350,7 +350,8 @@ public class BlockTransactionPrinter {
         .addAllLog(newLogList)
         .build();
 
-    System.out.println("=== " + title + " ===");
+    // Removed console output for transaction title to reduce noise
+    // System.out.println("=== " + title + " ===");
 
     if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
       System.out.println("--- JSON Format ---");
@@ -395,7 +396,8 @@ public class BlockTransactionPrinter {
       String blockHash, long blockNumber, long timestamp, int transactionIndex, String title,
       String kafkaTopic, String kafkaKey, TransactionCapsule trxCapsule) {
 
-    System.out.println("=== " + title + " ===");
+    // Removed console output for transaction title to reduce noise
+    // System.out.println("=== " + title + " ===");
 
     // Check if we have valid transaction data before proceeding
     if (transactionInfo == null && transaction == null) {
@@ -454,7 +456,8 @@ public class BlockTransactionPrinter {
       return;
     }
 
-    System.out.println("=== " + title + " ===");
+    // Removed console output for transaction title to reduce noise
+    // System.out.println("=== " + title + " ===");
 
     if ("trigger".equals(outputFormat)) {
       System.out.println("Warning: TransactionLogTrigger format requires both TransactionInfo and Transaction data.");
