@@ -306,12 +306,12 @@ public class BlockTransactionPrinter {
       props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
       props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
 
-      // Producer configuration for maximum throughput (fire-and-forget mode)
-      props.put(ProducerConfig.ACKS_CONFIG, "0"); // No acknowledgment for maximum speed
-      props.put(ProducerConfig.RETRIES_CONFIG, 0); // No retries in fire-and-forget mode
-      props.put(ProducerConfig.BATCH_SIZE_CONFIG, 131072); // Increased to 128KB for better batching
-      props.put(ProducerConfig.LINGER_MS_CONFIG, 20); // Increased to 20ms for more batching
-      props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, 134217728); // Increased to 128MB
+      // Producer configuration for high throughput with reliability
+      props.put(ProducerConfig.ACKS_CONFIG, "1"); // Wait for leader acknowledgment (reliable)
+      props.put(ProducerConfig.RETRIES_CONFIG, 3); // Retry on failure
+      props.put(ProducerConfig.BATCH_SIZE_CONFIG, 131072); // 128KB for better batching
+      props.put(ProducerConfig.LINGER_MS_CONFIG, 20); // 20ms for more batching
+      props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, 134217728); // 128MB buffer
 
       // Enable gzip compression for better network efficiency
       props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "gzip");
@@ -330,11 +330,11 @@ public class BlockTransactionPrinter {
    * Send message to Kafka topic
    */
   /**
-   * Send message to Kafka asynchronously (optimized for high throughput)
+   * Send message to Kafka asynchronously (optimized for high throughput with reliability)
    *
    * Performance optimizations:
-   * - Fire-and-forget mode: no callback overhead
-   * - Minimal error handling to reduce CPU usage
+   * - Asynchronous send with lightweight callback
+   * - Only log errors, skip success logging to reduce overhead
    * - Relies on Kafka producer's internal buffering and batching
    */
   private static void sendToKafka(String topic, String key, String message) {
@@ -344,9 +344,14 @@ public class BlockTransactionPrinter {
 
     try {
       ProducerRecord<String, String> record = new ProducerRecord<>(topic, key, message);
-      // Fire-and-forget: no callback for maximum throughput
-      // Kafka producer will handle batching and retries internally
-      kafkaProducer.send(record);
+      // Asynchronous send with error-only callback for reliability
+      kafkaProducer.send(record, (metadata, exception) -> {
+        if (exception != null) {
+          // Only log errors to maintain reliability while minimizing overhead
+          logger.error("Kafka send failed: {}", exception.getMessage());
+        }
+        // Skip success logging to reduce CPU usage
+      });
     } catch (Exception e) {
       // Only log critical errors to avoid performance impact
       logger.error("Kafka send error: {}", e.getMessage());
