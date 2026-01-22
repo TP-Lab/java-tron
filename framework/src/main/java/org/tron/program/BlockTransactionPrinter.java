@@ -941,17 +941,44 @@ public class BlockTransactionPrinter {
   }
 
   /**
-   * Process transactions in a block concurrently
+   * Process transactions in a block concurrently with batch TransactionInfo prefetching
+   * PERFORMANCE OPTIMIZATION: Prefetch all TransactionInfo for a block in one sequential read
    */
   private static void processTransactionsConcurrently(List<TransactionCapsule> transactions,
       String blockId, long blockNum, long timestamp, String outputFormat,
-      boolean useKafka, String kafkaTopic, Wallet wallet) {
+      boolean useKafka, String kafkaTopic, Wallet wallet, ChainBaseManager chainBaseManager) {
 
     if (transactions.isEmpty()) {
       return;
     }
 
     logger.debug("Processing {} transactions concurrently...", transactions.size());
+
+    // PERFORMANCE OPTIMIZATION: Batch prefetch all TransactionInfo for this block
+    // This eliminates random I/O by reading all transaction info in one sequential operation
+    Map<String, TransactionInfo> transactionInfoMap = new HashMap<>();
+    try {
+      if (chainBaseManager != null && chainBaseManager.getTransactionRetStore() != null) {
+        // Get all TransactionInfo for this block in one sequential read
+        byte[] blockNumKey = ByteArray.fromLong(blockNum);
+        org.tron.core.capsule.TransactionRetCapsule transactionRetCapsule =
+            chainBaseManager.getTransactionRetStore().getTransactionInfoByBlockNum(blockNumKey);
+
+        if (transactionRetCapsule != null && transactionRetCapsule.getInstance() != null) {
+          // Map all transaction IDs to their TransactionInfo
+          for (TransactionInfo info : transactionRetCapsule.getInstance().getTransactioninfoList()) {
+            String txId = ByteArray.toHexString(info.getId().toByteArray());
+            transactionInfoMap.put(txId, info);
+          }
+          logger.debug("Batch prefetched {} TransactionInfo for block {}", transactionInfoMap.size(), blockNum);
+        } else {
+          logger.debug("No TransactionRetCapsule found for block {}, falling back to individual queries", blockNum);
+        }
+      }
+    } catch (Exception e) {
+      logger.warn("Failed to batch prefetch TransactionInfo for block {}: {}, falling back to individual queries",
+                  blockNum, e.getMessage());
+    }
 
     // Create a list to hold all the CompletableFuture tasks
     List<CompletableFuture<Void>> futures = new ArrayList<>();
@@ -961,11 +988,17 @@ public class BlockTransactionPrinter {
     for (int i = 0; i < transactions.size(); i++) {
       final int transactionIndex = i;
       final TransactionCapsule trx = transactions.get(i);
+      final String txId = trx.getTransactionId().toString();
+
+      // Get prefetched TransactionInfo from map (zero I/O!)
+      final TransactionInfo prefetchedTransactionInfo = transactionInfoMap.get(txId);
 
       CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
         try {
-          processTransaction(trx, transactionIndex, blockId, blockNum, timestamp,
-                           outputFormat, useKafka, kafkaTopic, wallet);
+          // Use prefetched TransactionInfo to avoid random I/O
+          processTransactionWithPrefetchedInfo(trx, prefetchedTransactionInfo, transactionIndex,
+                                               blockId, blockNum, timestamp,
+                                               outputFormat, useKafka, kafkaTopic, wallet);
 
           int completed = processedCount.incrementAndGet();
           if (completed % 50 == 0 || completed == transactions.size()) {
@@ -994,41 +1027,65 @@ public class BlockTransactionPrinter {
   }
 
   /**
-   * Process a single transaction (used by concurrent processing)
+   * Process a single transaction with prefetched TransactionInfo (OPTIMIZED)
+   * This method uses prefetched TransactionInfo to eliminate random I/O
+   */
+  private static void processTransactionWithPrefetchedInfo(TransactionCapsule trx,
+      TransactionInfo prefetchedTransactionInfo, int transactionIndex,
+      String blockId, long blockNum, long timestamp, String outputFormat,
+      boolean useKafka, String kafkaTopic, Wallet wallet) {
+
+    String txId = trx.getTransactionId().toString();
+    logger.debug("Processing transaction #{} (ID: {}) in block {}", transactionIndex + 1, txId, blockNum);
+
+    // Use prefetched TransactionInfo (zero I/O!)
+    TransactionInfo transactionInfo = prefetchedTransactionInfo;
+
+    // If prefetch failed, fallback to individual query
+    if (transactionInfo == null) {
+      ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
+      transactionInfo = wallet.getTransactionInfoById(txIdBytes);
+      logger.debug("Using fallback query for TransactionInfo (prefetch missed): {}", txId);
+    }
+
+    // Get transaction directly from TransactionCapsule (zero I/O!)
+    Transaction transaction = null;
+    try {
+      transaction = trx.getInstance();
+      logger.debug("Retrieved transaction directly from TransactionCapsule for ID: {}", txId);
+    } catch (Exception e) {
+      logger.warn("Could not get transaction from TransactionCapsule for ID {}: {}", txId, e.getMessage());
+      // Fallback to database query only if TransactionCapsule fails
+      ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
+      transaction = wallet.getTransactionById(txIdBytes);
+    }
+
+    // Process the transaction with the retrieved data
+    processTransactionData(transactionInfo, transaction, trx, transactionIndex,
+                          blockId, blockNum, timestamp, outputFormat, useKafka, kafkaTopic);
+  }
+
+  /**
+   * Process a single transaction (used by concurrent processing - LEGACY METHOD)
+   * This method is kept for backward compatibility but uses the new optimized path
    */
   private static void processTransaction(TransactionCapsule trx, int transactionIndex,
       String blockId, long blockNum, long timestamp, String outputFormat,
       boolean useKafka, String kafkaTopic, Wallet wallet) {
 
+    // Use the optimized method with null prefetched info (will trigger fallback query)
+    processTransactionWithPrefetchedInfo(trx, null, transactionIndex, blockId, blockNum,
+                                        timestamp, outputFormat, useKafka, kafkaTopic, wallet);
+  }
+
+  /**
+   * Process transaction data (shared logic for both optimized and legacy paths)
+   */
+  private static void processTransactionData(TransactionInfo transactionInfo, Transaction transaction,
+      TransactionCapsule trx, int transactionIndex, String blockId, long blockNum, long timestamp,
+      String outputFormat, boolean useKafka, String kafkaTopic) {
+
     String txId = trx.getTransactionId().toString();
-    ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
-
-    logger.debug("Processing transaction #{} (ID: {}) in block {}", transactionIndex + 1, txId, blockNum);
-
-    // Get transaction info using wallet.getTransactionInfoById
-    TransactionInfo transactionInfo = wallet.getTransactionInfoById(txIdBytes);
-
-    // Get transaction using wallet.getTransactionById (walletsolidity/gettransactionbyid equivalent)
-    Transaction transaction = wallet.getTransactionById(txIdBytes);
-
-    // For genesis block or other special cases, if wallet methods return null,
-    // try to get transaction directly from the TransactionCapsule
-    if (transaction == null && trx != null) {
-      try {
-        transaction = trx.getInstance();
-        logger.debug("Retrieved transaction directly from TransactionCapsule for ID: {}", txId);
-
-        // Also get the correct transaction ID from TransactionCapsule
-        String correctTxId = trx.getTransactionId().toString();
-        if (!correctTxId.equals(txId)) {
-          logger.debug("Transaction ID mismatch - Correct: {}, Original: {}", correctTxId, txId);
-          // Update txId to use the correct one
-          txId = correctTxId;
-        }
-      } catch (Exception e) {
-        logger.warn("Could not get transaction from TransactionCapsule for ID {}: {}", txId, e.getMessage());
-      }
-    }
 
     // Handle different output formats
     if ("trigger".equals(outputFormat)) {
@@ -1600,7 +1657,7 @@ public class BlockTransactionPrinter {
 
           // Use concurrent processing for transactions within the block
           processTransactionsConcurrently(transactions, blockId, blockNum, timestamp,
-                                         outputFormat, useKafka, kafkaTopic, wallet);
+                                         outputFormat, useKafka, kafkaTopic, wallet, chainBaseManager);
         }
 
         // Update statistics after processing each batch
