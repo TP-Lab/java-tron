@@ -21,6 +21,9 @@ public class TransactionLogTrigger extends Trigger {
   private long blockNumber = -1;
   @Getter
   @Setter
+  private boolean fork;
+  @Getter
+  @Setter
   private long energyUsage;
   @Getter
   @Setter

@@ -1188,6 +1188,7 @@ public class Manager {
           }
         }
       }
+      postForkTransactionTriggers(first, binaryTree.getValue());
     }
 
   }
@@ -2153,7 +2154,53 @@ public class Manager {
     lastUsedSolidityNum = latestSolidifiedBlockNumber;
   }
 
+  private void postForkTransactionTriggers(List<KhaosBlock> newBranch,
+      List<KhaosBlock> oldBranch) {
+    if (!eventPluginLoaded || !EventPluginLoader.getInstance().isTransactionLogTriggerEnable()) {
+      return;
+    }
+
+    List<KhaosBlock> oldBlocks = Collections.emptyList();
+    if (CollectionUtils.isNotEmpty(oldBranch)) {
+      oldBlocks = new ArrayList<>(oldBranch);
+      Collections.reverse(oldBlocks);
+    }
+
+    List<KhaosBlock> newBlocks = CollectionUtils.isNotEmpty(newBranch)
+        ? newBranch
+        : Collections.emptyList();
+    logger.info("Fork transaction triggers: oldBranchCount={}, oldRange={}, newBranchCount={}, newRange={}",
+        oldBlocks.size(), formatForkBranchRange(oldBlocks),
+        newBlocks.size(), formatForkBranchRange(newBlocks));
+
+    for (KhaosBlock oldBlock : oldBlocks) {
+      processTransactionTrigger(oldBlock.getBlk(), true);
+    }
+
+    for (KhaosBlock newBlock : newBlocks) {
+      processTransactionTrigger(newBlock.getBlk(), false);
+    }
+  }
+
+  private String formatForkBranchRange(List<KhaosBlock> branch) {
+    if (CollectionUtils.isEmpty(branch)) {
+      return "empty";
+    }
+    BlockCapsule startBlock = branch.get(0).getBlk();
+    BlockCapsule endBlock = branch.get(branch.size() - 1).getBlk();
+    if (startBlock == null || endBlock == null) {
+      return "unknown";
+    }
+    return String.format("%d(%s)->%d(%s)",
+        startBlock.getNum(), startBlock.getBlockId(),
+        endBlock.getNum(), endBlock.getBlockId());
+  }
+
   private void processTransactionTrigger(BlockCapsule newBlock) {
+    processTransactionTrigger(newBlock, false);
+  }
+
+  private void processTransactionTrigger(BlockCapsule newBlock, boolean isFork) {
     List<TransactionCapsule> transactionCapsuleList = newBlock.getTransactions();
 
     FilterQuery filterQuery = EventPluginLoader.getInstance().getFilterQuery();
@@ -2197,7 +2244,7 @@ public class Manager {
           transactionCapsule.setBlockNum(newBlock.getNum());
 
           cumulativeEnergyUsed += postTransactionTrigger(transactionCapsule, newBlock, i,
-              cumulativeEnergyUsed, cumulativeLogCount, transactionInfo, energyUnitPrice);
+              cumulativeEnergyUsed, cumulativeLogCount, transactionInfo, energyUnitPrice, isFork);
 
           cumulativeLogCount += transactionInfo.getLogCount();
         }
@@ -2206,12 +2253,12 @@ public class Manager {
             newBlock.getNum(),
             "the sizes of transactionInfoList and transactionCapsuleList are not equal");
         for (TransactionCapsule e : newBlock.getTransactions()) {
-          postTransactionTrigger(e, newBlock);
+          postTransactionTrigger(e, newBlock, isFork);
         }
       }
     } else {
       for (TransactionCapsule e : newBlock.getTransactions()) {
-        postTransactionTrigger(e, newBlock);
+        postTransactionTrigger(e, newBlock, isFork);
       }
     }
   }
@@ -2325,9 +2372,11 @@ public class Manager {
   // cumulativeEnergyUsed is the total of energy used before the current transaction
   private long postTransactionTrigger(final TransactionCapsule trxCap,
       final BlockCapsule blockCap, int index, long preCumulativeEnergyUsed,
-      long cumulativeLogCount, final TransactionInfo transactionInfo, long energyUnitPrice) {
+      long cumulativeLogCount, final TransactionInfo transactionInfo, long energyUnitPrice,
+      boolean isFork) {
     TransactionLogTriggerCapsule trx = new TransactionLogTriggerCapsule(trxCap, blockCap,
         index, preCumulativeEnergyUsed, cumulativeLogCount, transactionInfo, energyUnitPrice);
+    trx.getTransactionLogTrigger().setFork(isFork);
     trx.setLatestSolidifiedBlockNumber(getDynamicPropertiesStore()
         .getLatestSolidifiedBlockNum());
     if (!triggerCapsuleQueue.offer(trx)) {
@@ -2339,8 +2388,9 @@ public class Manager {
 
 
   private void postTransactionTrigger(final TransactionCapsule trxCap,
-      final BlockCapsule blockCap) {
+      final BlockCapsule blockCap, boolean isFork) {
     TransactionLogTriggerCapsule trx = new TransactionLogTriggerCapsule(trxCap, blockCap);
+    trx.getTransactionLogTrigger().setFork(isFork);
     trx.setLatestSolidifiedBlockNumber(getDynamicPropertiesStore()
         .getLatestSolidifiedBlockNum());
     if (!triggerCapsuleQueue.offer(trx)) {
