@@ -112,7 +112,8 @@ public class BlockTransactionPrinter {
   private static KafkaProducer<String, String> kafkaProducer = null;
 
   // Concurrent processing configuration
-  private static ExecutorService transactionExecutor = null;
+  private static ExecutorService blockExecutor = null; // For block-level concurrency
+  private static ExecutorService transactionExecutor = null; // For transaction-level concurrency
   private static final int DEFAULT_THREAD_POOL_SIZE = Runtime.getRuntime().availableProcessors() * 2;
   private static int threadPoolSize = DEFAULT_THREAD_POOL_SIZE;
 
@@ -130,20 +131,54 @@ public class BlockTransactionPrinter {
    * Initialize thread pool for concurrent transaction processing
    */
   private static void initializeThreadPool(int poolSize) {
-    if (transactionExecutor != null) {
+    if (blockExecutor != null && transactionExecutor != null) {
       return; // Already initialized
     }
 
     threadPoolSize = poolSize;
+
+    // Block-level executor: smaller pool for coarse-grained parallelism
+    int blockPoolSize = Math.max(4, threadPoolSize / 4);
+    blockExecutor = Executors.newFixedThreadPool(blockPoolSize);
+    logger.info("Block processing thread pool initialized with {} threads", blockPoolSize);
+
+    // Transaction-level executor: larger pool for fine-grained parallelism
     transactionExecutor = Executors.newFixedThreadPool(threadPoolSize);
-    String threadPoolMessage = "Transaction processing thread pool initialized with " + threadPoolSize + " threads";
-    logger.info(threadPoolMessage);
+    logger.info("Transaction processing thread pool initialized with {} threads", threadPoolSize);
   }
 
   /**
    * Shutdown thread pool gracefully
    */
   private static void shutdownThreadPool() {
+    // Shutdown block executor first
+    if (blockExecutor != null) {
+      try {
+        logger.debug("Shutting down block processing thread pool...");
+        blockExecutor.shutdown();
+
+        // Wait for existing tasks to complete
+        if (!blockExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+          logger.warn("Block thread pool did not terminate gracefully, forcing shutdown...");
+          blockExecutor.shutdownNow();
+
+          // Wait a bit more for tasks to respond to being cancelled
+          if (!blockExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+            logger.error("Block thread pool did not terminate after forced shutdown");
+          }
+        }
+
+        logger.info("Block processing thread pool shut down successfully");
+      } catch (InterruptedException e) {
+        logger.error("Block thread pool shutdown interrupted", e);
+        blockExecutor.shutdownNow();
+        Thread.currentThread().interrupt();
+      } finally {
+        blockExecutor = null;
+      }
+    }
+
+    // Shutdown transaction executor
     if (transactionExecutor != null) {
       try {
         logger.debug("Shutting down transaction processing thread pool...");
@@ -151,18 +186,18 @@ public class BlockTransactionPrinter {
 
         // Wait for existing tasks to complete
         if (!transactionExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
-          logger.warn("Thread pool did not terminate gracefully, forcing shutdown...");
+          logger.warn("Transaction thread pool did not terminate gracefully, forcing shutdown...");
           transactionExecutor.shutdownNow();
 
           // Wait a bit more for tasks to respond to being cancelled
           if (!transactionExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
-            logger.error("Thread pool did not terminate after forced shutdown");
+            logger.error("Transaction thread pool did not terminate after forced shutdown");
           }
         }
 
         logger.info("Transaction processing thread pool shut down successfully");
       } catch (InterruptedException e) {
-        logger.error("Thread pool shutdown interrupted", e);
+        logger.error("Transaction thread pool shutdown interrupted", e);
         transactionExecutor.shutdownNow();
         Thread.currentThread().interrupt();
       } finally {
@@ -1679,7 +1714,7 @@ public class BlockTransactionPrinter {
             } catch (Exception e) {
               logger.error("Error processing block {}: {}", blockNum, e.getMessage(), e);
             }
-          }, transactionExecutor);
+          }, blockExecutor);
 
           blockFutures.add(blockFuture);
         }
