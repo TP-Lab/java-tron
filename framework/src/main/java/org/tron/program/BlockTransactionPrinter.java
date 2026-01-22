@@ -1741,7 +1741,7 @@ public class BlockTransactionPrinter {
 
       // Process blocks in batches to avoid memory issues
       // Larger batch size reduces batch switching overhead and improves throughput
-      long batchSize = 5000;
+      long batchSize = 1000;
       for (long currentStart = startBlockNum; currentStart <= endBlockNum; currentStart += batchSize) {
         long currentEnd = Math.min(currentStart + batchSize - 1, endBlockNum);
         long limit = currentEnd - currentStart + 1;
