@@ -1096,10 +1096,17 @@ public class BlockTransactionPrinter {
     AtomicInteger processedCount = new AtomicInteger(0);
 
     // 遍历区块中的所有交易
+    // 创建一个 Map 来存储每个交易的索引，避免并发闭包捕获问题
+    Map<String, Integer> txIndexMap = new HashMap<>();
     for (int i = 0; i < transactions.size(); i++) {
-      final int transactionIndex = i;
+      txIndexMap.put(transactions.get(i).getTransactionId().toString(), i);
+    }
+
+    for (int i = 0; i < transactions.size(); i++) {
       final TransactionCapsule trx = transactions.get(i);
       final String txId = trx.getTransactionId().toString();
+      // 从 Map 中获取索引，确保并发安全
+      final int transactionIndex = txIndexMap.get(txId);
 
       // ----------------------------------------------------------------
       // 核心优化点：从内存 HashMap 获取 TransactionInfo（零 I/O！）
