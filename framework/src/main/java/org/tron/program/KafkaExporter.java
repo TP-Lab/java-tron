@@ -170,8 +170,14 @@ public class KafkaExporter {
         final long finalFrom = from;
         final long finalTo = to;
         
+        // ========================================================================
+        // Preloader 线程 - 应用 BlockTransactionPrinter 的批量预取优化
+        // ========================================================================
+        // 【优化前】逐个查询每个交易的 TransactionInfo（N 次随机 I/O）
+        // 【优化后】使用 TransactionRetStore.getTransactionInfoByBlockNum() 批量读取（1 次顺序 I/O）
+        // ========================================================================
         Thread preloader = new Thread(() -> {
-            log.info("Preloader started.");
+            log.info("Preloader started with optimized batch prefetch strategy.");
             for (long num = finalFrom; num <= finalTo; num++) {
                 if (tracker.hasError || Thread.currentThread().isInterrupted()) break;
                 try {
@@ -181,26 +187,69 @@ public class KafkaExporter {
                         continue;
                     }
 
-                    // Deep Prefetch: Fetch TransactionInfos for the block in parallel
+                    // ----------------------------------------------------------------
+                    // I/O 优化核心：批量预取 TransactionInfo（参考 BlockTransactionPrinter）
+                    // ----------------------------------------------------------------
+                    // 使用 TransactionRetStore.getTransactionInfoByBlockNum() 一次性读取
+                    // 整个区块的所有 TransactionInfo，将 N 次随机 I/O 转换为 1 次顺序 I/O
+                    // ----------------------------------------------------------------
                     List<TransactionCapsule> txs = block.getTransactions();
                     Map<com.google.protobuf.ByteString, TransactionInfo> txInfos = new ConcurrentHashMap<>(txs.size());
+
                     if (!txs.isEmpty()) {
-                        CountDownLatch latch = new CountDownLatch(txs.size());
-                        for (TransactionCapsule tx : txs) {
-                            executor.submit(() -> {
-                                try {
-                                    TransactionInfo info = wallet.getTransactionInfoById(tx.getTransactionId().getByteString());
-                                    if (info != null) {
-                                        txInfos.put(tx.getTransactionId().getByteString(), info);
-                                    }
-                                } catch (Exception e) {
-                                    log.error("Error prefetching tx info for " + tx.getTransactionId().toString(), e);
-                                } finally {
-                                    latch.countDown();
+                        try {
+                            // 批量预取：一次顺序 I/O 读取整个区块的所有 TransactionInfo
+                            byte[] blockNumKey = org.tron.common.utils.ByteArray.fromLong(num);
+                            org.tron.core.capsule.TransactionRetCapsule transactionRetCapsule =
+                                chainBaseManager.getTransactionRetStore().getTransactionInfoByBlockNum(blockNumKey);
+
+                            if (transactionRetCapsule != null && transactionRetCapsule.getInstance() != null) {
+                                // 构建内存映射 HashMap<txId, TransactionInfo>
+                                for (TransactionInfo info : transactionRetCapsule.getInstance().getTransactioninfoList()) {
+                                    txInfos.put(info.getId(), info);
                                 }
-                            });
+                                log.debug("Batch prefetched {} TransactionInfo for block {} (optimized)", txInfos.size(), num);
+                            } else {
+                                // 降级处理：如果批量预取失败，使用原有的并行查询方式
+                                log.debug("Batch prefetch returned null for block {}, falling back to parallel queries", num);
+                                CountDownLatch latch = new CountDownLatch(txs.size());
+                                for (TransactionCapsule tx : txs) {
+                                    executor.submit(() -> {
+                                        try {
+                                            TransactionInfo info = wallet.getTransactionInfoById(tx.getTransactionId().getByteString());
+                                            if (info != null) {
+                                                txInfos.put(tx.getTransactionId().getByteString(), info);
+                                            }
+                                        } catch (Exception e) {
+                                            log.error("Error prefetching tx info for " + tx.getTransactionId().toString(), e);
+                                        } finally {
+                                            latch.countDown();
+                                        }
+                                    });
+                                }
+                                latch.await();
+                            }
+                        } catch (Exception e) {
+                            // 异常降级处理：如果批量预取失败，使用原有的并行查询方式
+                            log.warn("Failed to batch prefetch TransactionInfo for block {}: {}, falling back to parallel queries",
+                                    num, e.getMessage());
+                            CountDownLatch latch = new CountDownLatch(txs.size());
+                            for (TransactionCapsule tx : txs) {
+                                executor.submit(() -> {
+                                    try {
+                                        TransactionInfo info = wallet.getTransactionInfoById(tx.getTransactionId().getByteString());
+                                        if (info != null) {
+                                            txInfos.put(tx.getTransactionId().getByteString(), info);
+                                        }
+                                    } catch (Exception ex) {
+                                        log.error("Error prefetching tx info for " + tx.getTransactionId().toString(), ex);
+                                    } finally {
+                                        latch.countDown();
+                                    }
+                                });
+                            }
+                            latch.await();
                         }
-                        latch.await();
                     }
                     blockQueue.put(new BlockTask(num, block, txInfos));
                 } catch (InterruptedException e) {
@@ -294,6 +343,25 @@ public class KafkaExporter {
         log.info("Done.");
     }
 
+    /**
+     * Process a block and export its transaction logs to Kafka
+     *
+     * ============================================================================
+     * I/O 优化说明 - 参考 BlockTransactionPrinter 的批量预取策略
+     * ============================================================================
+     *
+     * 【优化前】KafkaExporter 在 preloader 线程中预取 TransactionInfo：
+     *   - 使用 wallet.getTransactionInfoById() 逐个查询每个交易
+     *   - 对于 170 个交易的区块：170 次随机 I/O
+     *
+     * 【优化后】使用 BlockTransactionPrinter 的批量预取策略：
+     *   - 使用 TransactionRetStore.getTransactionInfoByBlockNum() 批量读取
+     *   - 一次顺序 I/O 读取整个区块的所有 TransactionInfo
+     *   - 性能提升：170 次随机 I/O → 1 次顺序 I/O
+     *
+     * 【注意】task.txInfos 现在通过批量预取填充，而非逐个查询
+     * ============================================================================
+     */
     private static int processBlock(BlockTask task, ExporterConfig config, KafkaProducer<String, byte[]> producer,
                                      Schema blockSchema, Schema logSchema, AsyncTracker tracker, Wallet wallet, ExecutorService executor) throws IOException {
         BlockCapsule block = task.block;
@@ -310,16 +378,21 @@ public class KafkaExporter {
         for (int i = 0; i < txs.size(); i++) {
             final int txIndex = i;
             final TransactionCapsule tx = txs.get(i);
-            
+
             futures.add(executor.submit(() -> {
                 List<GenericRecord> txLogs = new ArrayList<>();
                 String txHash = Hex.toHexString(tx.getTransactionId().getBytes());
-                
-                // Use Pre-fetched TransactionInfo
+
+                // ----------------------------------------------------------------
+                // I/O 优化：使用预取的 TransactionInfo（零 I/O）
+                // ----------------------------------------------------------------
+                // task.txInfos 已通过批量预取填充，直接从内存 HashMap 读取
+                // 如果预取失败，info 为 null，会跳过该交易的日志处理
+                // ----------------------------------------------------------------
                 TransactionInfo info = task.txInfos.get(tx.getTransactionId().getByteString());
                 if (info == null) {
                     log.warn("Transaction Info not found (pre-fetch missing) for tx: {} in block: {}", txHash, blockNum);
-                    return txLogs; 
+                    return txLogs;
                 }
 
                 List<TransactionInfo.Log> logs = info.getLogList();
@@ -339,7 +412,7 @@ public class KafkaExporter {
                     for (com.google.protobuf.ByteString topic : lg.getTopicsList()) {
                         topics.add(Hex.toHexString(topic.toByteArray()));
                     }
-                    
+
                     logRecord.put("topic0", topics.size() > 0 ? topics.get(0) : "");
                     logRecord.put("topic1", topics.size() > 1 ? topics.get(1) : "");
                     logRecord.put("topic2", topics.size() > 2 ? topics.get(2) : "");
