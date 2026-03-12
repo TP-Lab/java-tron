@@ -5,6 +5,7 @@
 
 # gradle
 .gradle
+.gradle-user-home
 build
 
 # log
@@ -57,3 +58,6 @@ Wallet
 
 /framework/propPath
 .cache
+
+# Claude IDE
+.claude

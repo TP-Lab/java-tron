@@ -1121,6 +1121,10 @@ public class Manager {
       throw e;
     }
 
+    List<KhaosBlock> newBlocks = normalizeForkBranch(binaryTree.getKey());
+    List<KhaosBlock> oldBlocks = normalizeForkBranch(binaryTree.getValue());
+    logForkDetails(newBlocks, oldBlocks);
+
     if (CollectionUtils.isNotEmpty(binaryTree.getValue())) {
       while (!getDynamicPropertiesStore()
           .getLatestBlockHeaderHash()
@@ -1134,8 +1138,7 @@ public class Manager {
     }
 
     if (CollectionUtils.isNotEmpty(binaryTree.getKey())) {
-      List<KhaosBlock> first = new ArrayList<>(binaryTree.getKey());
-      Collections.reverse(first);
+      List<KhaosBlock> first = new ArrayList<>(newBlocks);
       for (KhaosBlock item : first) {
         Exception exception = null;
         // todo  process the exception carefully later
@@ -1196,7 +1199,7 @@ public class Manager {
           }
         }
       }
-      postForkTransactionTriggers(first, binaryTree.getValue());
+      postForkTransactionTriggers(first, oldBlocks);
     }
 
   }
@@ -2212,26 +2215,31 @@ public class Manager {
       return;
     }
 
-    List<KhaosBlock> oldBlocks = Collections.emptyList();
-    if (CollectionUtils.isNotEmpty(oldBranch)) {
-      oldBlocks = new ArrayList<>(oldBranch);
-      Collections.reverse(oldBlocks);
-    }
-
-    List<KhaosBlock> newBlocks = CollectionUtils.isNotEmpty(newBranch)
-        ? newBranch
-        : Collections.emptyList();
-    logger.info("Fork transaction triggers: oldBranchCount={}, oldRange={}, newBranchCount={}, newRange={}",
-        oldBlocks.size(), formatForkBranchRange(oldBlocks),
-        newBlocks.size(), formatForkBranchRange(newBlocks));
-
-    for (KhaosBlock oldBlock : oldBlocks) {
+    for (KhaosBlock oldBlock : oldBranch) {
       processTransactionTrigger(oldBlock.getBlk(), true);
     }
 
-    for (KhaosBlock newBlock : newBlocks) {
+    for (KhaosBlock newBlock : newBranch) {
       processTransactionTrigger(newBlock.getBlk(), false);
     }
+  }
+
+  private List<KhaosBlock> normalizeForkBranch(List<KhaosBlock> branch) {
+    if (CollectionUtils.isEmpty(branch)) {
+      return Collections.emptyList();
+    }
+
+    List<KhaosBlock> blocks = new ArrayList<>(branch);
+    Collections.reverse(blocks);
+    return blocks;
+  }
+
+  private void logForkDetails(List<KhaosBlock> newBlocks, List<KhaosBlock> oldBlocks) {
+    logger.info("Fork transaction triggers: oldBranchCount={}, oldRange={}, newBranchCount={}, newRange={}",
+        oldBlocks.size(), formatForkBranchRange(oldBlocks),
+        newBlocks.size(), formatForkBranchRange(newBlocks));
+    logForkTransactionDetails(oldBlocks, "old", true);
+    logForkTransactionDetails(newBlocks, "new", false);
   }
 
   private String formatForkBranchRange(List<KhaosBlock> branch) {
@@ -2246,6 +2254,36 @@ public class Manager {
     return String.format("%d(%s)->%d(%s)",
         startBlock.getNum(), startBlock.getBlockId(),
         endBlock.getNum(), endBlock.getBlockId());
+  }
+
+  private void logForkTransactionDetails(List<KhaosBlock> branch, String branchType,
+      boolean isFork) {
+    if (CollectionUtils.isEmpty(branch)) {
+      return;
+    }
+
+    for (KhaosBlock khaosBlock : branch) {
+      BlockCapsule block = khaosBlock.getBlk();
+      if (block == null) {
+        logger.info("Fork block detail: branch={}, fork={}, block=unknown", branchType, isFork);
+        continue;
+      }
+
+      List<TransactionCapsule> transactions = block.getTransactions();
+      if (CollectionUtils.isEmpty(transactions)) {
+        logger.info("Fork block detail: branch={}, fork={}, blockNum={}, blockHash={}, txCount=0",
+            branchType, isFork, block.getNum(), block.getBlockId());
+        continue;
+      }
+
+      for (int i = 0; i < transactions.size(); i++) {
+        TransactionCapsule transaction = transactions.get(i);
+        logger.info(
+            "Fork transaction detail: branch={}, fork={}, blockNum={}, blockHash={}, txIndex={}, txHash={}",
+            branchType, isFork, block.getNum(), block.getBlockId(), i,
+            transaction.getTransactionId());
+      }
+    }
   }
 
   private void processTransactionTrigger(BlockCapsule newBlock) {
