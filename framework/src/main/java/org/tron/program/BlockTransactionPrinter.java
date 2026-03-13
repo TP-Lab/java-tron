@@ -61,6 +61,9 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
 
+// Guava RateLimiter for Kafka rate limiting
+import com.google.common.util.concurrent.RateLimiter;
+
 /**
  * A test program to print transactions from a specified block range.
  * 
@@ -93,6 +96,7 @@ import org.apache.kafka.common.serialization.StringSerializer;
  *        trigger  - TransactionLogTrigger format (structured JSON with comprehensive transaction data)
  *    -kb <kafka_brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)
  *    -kt <kafka_topic>: Kafka topic name for sending trigger data
+ *    -kafka-rate <rate>: Kafka rate limit in messages per second (0 = no limit, default: 0)
  *    -threads <count>: Number of threads for concurrent transaction processing within each block (default: CPU cores * 2)
  *    (Other standard TRON node options are also supported)
  * 
@@ -110,6 +114,10 @@ import org.apache.kafka.common.serialization.StringSerializer;
 public class BlockTransactionPrinter {
 
   private static KafkaProducer<String, String> kafkaProducer = null;
+
+  // Kafka rate limiting configuration
+  private static int kafkaRateLimit = 0; // 0 means no limit, otherwise messages per second
+  private static RateLimiter kafkaRateLimiter = null;
 
   // Concurrent processing configuration
   private static ExecutorService blockExecutor = null; // For block-level concurrency
@@ -340,6 +348,11 @@ public class BlockTransactionPrinter {
   private static void sendToKafka(String topic, String key, String message) {
     if (kafkaProducer == null) {
       return; // Silently skip if not initialized
+    }
+
+    // Apply rate limiting if configured
+    if (kafkaRateLimit > 0 && kafkaRateLimiter != null) {
+      kafkaRateLimiter.acquire();
     }
 
     try {
@@ -1337,6 +1350,7 @@ public class BlockTransactionPrinter {
       System.out.println("  -fm <format>: Output format (json|protobuf|both|trigger), default: both");
       System.out.println("  -kb <brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)");
       System.out.println("  -kt <topic>: Kafka topic name for sending trigger data (requires -kb)");
+      System.out.println("  -kafka-rate <rate>: Kafka rate limit in messages/second (0 = no limit, default: 0)");
       System.out.println("  -threads <count>: Number of threads for concurrent transaction processing, default: " + DEFAULT_THREAD_POOL_SIZE);
       return;
     }
@@ -1363,6 +1377,20 @@ public class BlockTransactionPrinter {
       } else if ("-kt".equals(args[i])) {
         kafkaTopic = args[i + 1];
         logger.info("Kafka topic set to: {}", kafkaTopic);
+      } else if ("-kafka-rate".equals(args[i])) {
+        try {
+          kafkaRateLimit = Integer.parseInt(args[i + 1]);
+          if (kafkaRateLimit < 0) {
+            logger.warn("Kafka rate limit must be non-negative. Disabling rate limit.");
+            kafkaRateLimit = 0;
+          } else {
+            kafkaRateLimiter = RateLimiter.create(kafkaRateLimit);
+            logger.info("Kafka rate limit set to: {} messages/second", kafkaRateLimit);
+          }
+        } catch (NumberFormatException e) {
+          logger.warn("Invalid Kafka rate limit. Disabling rate limit.");
+          kafkaRateLimit = 0;
+        }
       } else if ("-threads".equals(args[i])) {
         try {
           customThreadPoolSize = Integer.parseInt(args[i + 1]);
@@ -1449,10 +1477,10 @@ public class BlockTransactionPrinter {
       String[] configArgs;
       int configStartIndex = isTransactionMode ? 2 : 2; // Both modes skip first 2 args
 
-      // Filter out custom parameters (-fm, -kb, -kt, -threads) and their values since they're not TRON node parameters
+      // Filter out custom parameters (-fm, -kb, -kt, -kafka-rate, -threads) and their values since they're not TRON node parameters
       List<String> filteredArgs = new ArrayList<>();
       for (int i = configStartIndex; i < args.length; i++) {
-        if ("-fm".equals(args[i]) || "-kb".equals(args[i]) || "-kt".equals(args[i]) || "-threads".equals(args[i])) {
+        if ("-fm".equals(args[i]) || "-kb".equals(args[i]) || "-kt".equals(args[i]) || "-kafka-rate".equals(args[i]) || "-threads".equals(args[i])) {
           // Skip custom parameter and its value
           i++; // Skip the next argument (parameter value)
         } else {
