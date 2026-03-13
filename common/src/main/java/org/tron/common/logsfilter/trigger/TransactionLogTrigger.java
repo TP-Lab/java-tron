@@ -115,6 +115,10 @@ public class TransactionLogTrigger extends Trigger {
 
   @Getter
   @Setter
+  private List<String> signatures;
+
+  @Getter
+  @Setter
   private Map<String, Long> extMap;
 
   public TransactionLogTrigger() {

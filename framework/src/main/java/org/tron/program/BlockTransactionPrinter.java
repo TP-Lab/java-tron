@@ -654,25 +654,14 @@ public class BlockTransactionPrinter {
       }
     }
 
-    // Transaction signatures - add to TransactionDetail
+    // Transaction signatures
     if (transaction != null && transaction.getSignatureCount() > 0) {
-      if (trigger.getExtMap() == null) {
-        trigger.setExtMap(new HashMap<>());
-      }
-
-      trigger.getExtMap().put("signatureCount", (long) transaction.getSignatureCount());
-
       List<String> signatures = new ArrayList<>();
       for (int i = 0; i < transaction.getSignatureCount(); i++) {
         String signature = Hex.toHexString(transaction.getSignature(i).toByteArray());
         signatures.add(signature);
-
-        // Log the actual signature for debugging
-        logger.debug("Transaction {} - signature_{}: {}", trigger.getTransactionId(), i, signature);
       }
-
-      // Signatures are already in the transaction object
-      logger.debug("Transaction {} - Added {} signatures to TransactionDetail", trigger.getTransactionId(), signatures.size());
+      trigger.setSignatures(signatures);
     }
 
     // Transaction execution results and fees
