@@ -59,7 +59,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+
+// Protobuf trigger imports
+import org.tron.protos.TransactionLogTriggerProtos;
 
 // Guava RateLimiter for Kafka rate limiting
 import com.google.common.util.concurrent.RateLimiter;
@@ -94,6 +98,7 @@ import com.google.common.util.concurrent.RateLimiter;
  *        protobuf - Protobuf toString format
  *        both     - Both JSON and protobuf formats
  *        trigger  - TransactionLogTrigger format (structured JSON with comprehensive transaction data)
+ *        trigger-proto - TransactionLogTrigger format as protobuf binary (for Kafka)
  *    -kb <kafka_brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)
  *    -kt <kafka_topic>: Kafka topic name for sending trigger data
  *    -kafka-rate <rate>: Kafka rate limit in messages per second (0 = no limit, default: 0)
@@ -114,6 +119,7 @@ import com.google.common.util.concurrent.RateLimiter;
 public class BlockTransactionPrinter {
 
   private static KafkaProducer<String, String> kafkaProducer = null;
+  private static KafkaProducer<String, byte[]> kafkaProtoProducer = null;
 
   // Kafka rate limiting configuration
   private static int kafkaRateLimit = 0; // 0 means no limit, otherwise messages per second
@@ -372,6 +378,59 @@ public class BlockTransactionPrinter {
   }
 
   /**
+   * Initialize Kafka producer for protobuf binary output
+   */
+  private static void initKafkaProtoProducer(String kafkaBrokers) {
+    if (kafkaProtoProducer != null) {
+      return;
+    }
+
+    try {
+      Properties props = new Properties();
+      props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBrokers);
+      props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+      props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
+
+      props.put(ProducerConfig.ACKS_CONFIG, "1");
+      props.put(ProducerConfig.RETRIES_CONFIG, 3);
+      props.put(ProducerConfig.BATCH_SIZE_CONFIG, 131072);
+      props.put(ProducerConfig.LINGER_MS_CONFIG, 20);
+      props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, 134217728);
+      props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "lz4");
+
+      kafkaProtoProducer = new KafkaProducer<>(props);
+      logger.info("Kafka proto producer initialized successfully with brokers: {}", kafkaBrokers);
+    } catch (Exception e) {
+      logger.error("Failed to initialize Kafka proto producer: {}", e.getMessage(), e);
+      kafkaProtoProducer = null;
+    }
+  }
+
+  /**
+   * Send protobuf binary to Kafka topic
+   */
+  private static void sendToKafkaProto(String topic, String key, byte[] payload) {
+    if (kafkaProtoProducer == null) {
+      return;
+    }
+
+    if (kafkaRateLimit > 0 && kafkaRateLimiter != null) {
+      kafkaRateLimiter.acquire();
+    }
+
+    try {
+      ProducerRecord<String, byte[]> record = new ProducerRecord<>(topic, key, payload);
+      kafkaProtoProducer.send(record, (metadata, exception) -> {
+        if (exception != null) {
+          logger.error("Kafka proto send failed: {}", exception.getMessage());
+        }
+      });
+    } catch (Exception e) {
+      logger.error("Kafka proto send error: {}", e.getMessage());
+    }
+  }
+
+  /**
    * Close Kafka producer
    */
   private static void closeKafkaProducer() {
@@ -384,6 +443,17 @@ public class BlockTransactionPrinter {
         logger.error("Error closing Kafka producer: " + e.getMessage(), e);
       } finally {
         kafkaProducer = null;
+      }
+    }
+    if (kafkaProtoProducer != null) {
+      try {
+        kafkaProtoProducer.flush();
+        kafkaProtoProducer.close();
+        logger.info("Kafka proto producer closed successfully");
+      } catch (Exception e) {
+        logger.error("Error closing Kafka proto producer: " + e.getMessage(), e);
+      } finally {
+        kafkaProtoProducer = null;
       }
     }
   }
@@ -947,6 +1017,98 @@ public class BlockTransactionPrinter {
   }
 
   /**
+   * Convert TransactionLogTrigger POJO to protobuf message
+   */
+  private static TransactionLogTriggerProtos.TransactionLogTriggerPB convertToProto(TransactionLogTrigger trigger) {
+    TransactionLogTriggerProtos.TransactionLogTriggerPB.Builder builder =
+        TransactionLogTriggerProtos.TransactionLogTriggerPB.newBuilder();
+
+    builder.setTimeStamp(trigger.getTimeStamp());
+    if (trigger.getTriggerName() != null) builder.setTriggerName(trigger.getTriggerName());
+    if (trigger.getTransactionId() != null) builder.setTransactionId(trigger.getTransactionId());
+    if (trigger.getBlockHash() != null) builder.setBlockHash(trigger.getBlockHash());
+    builder.setBlockNumber(trigger.getBlockNumber());
+    builder.setEnergyUsage(trigger.getEnergyUsage());
+    builder.setEnergyFee(trigger.getEnergyFee());
+    builder.setOriginEnergyUsage(trigger.getOriginEnergyUsage());
+    builder.setEnergyUsageTotal(trigger.getEnergyUsageTotal());
+    builder.setNetUsage(trigger.getNetUsage());
+    builder.setNetFee(trigger.getNetFee());
+    builder.setMemoFee(trigger.getMemoFee());
+    builder.setMultiSignFee(trigger.getMultiSignFee());
+    builder.setFee(trigger.getFee());
+
+    if (trigger.getResult() != null) builder.setResult(trigger.getResult());
+    if (trigger.getTxResult() != null) builder.setTxResult(trigger.getTxResult());
+    if (trigger.getContractAddress() != null) builder.setContractAddress(trigger.getContractAddress());
+    if (trigger.getContractType() != null) builder.setContractType(trigger.getContractType());
+    builder.setFeeLimit(trigger.getFeeLimit());
+    builder.setContractCallValue(trigger.getContractCallValue());
+    if (trigger.getContractData() != null) builder.setContractData(trigger.getContractData());
+    if (trigger.getContractResult() != null) builder.setContractResult(trigger.getContractResult());
+
+    if (trigger.getFromAddress() != null) builder.setFromAddress(trigger.getFromAddress());
+    if (trigger.getToAddress() != null) builder.setToAddress(trigger.getToAddress());
+    if (trigger.getAssetName() != null) builder.setAssetName(trigger.getAssetName());
+    builder.setAssetAmount(trigger.getAssetAmount());
+    builder.setLatestSolidifiedBlockNumber(trigger.getLatestSolidifiedBlockNumber());
+
+    if (trigger.getData() != null) builder.setData(trigger.getData());
+    builder.setTransactionIndex(trigger.getTransactionIndex());
+    builder.setCumulativeEnergyUsed(trigger.getCumulativeEnergyUsed());
+    builder.setPreCumulativeLogCount(trigger.getPreCumulativeLogCount());
+    builder.setEnergyUnitPrice(trigger.getEnergyUnitPrice());
+    if (trigger.getTransactionDetail() != null) builder.setTransactionDetail(trigger.getTransactionDetail());
+
+    // Signatures
+    if (trigger.getSignatures() != null) {
+      builder.addAllSignatures(trigger.getSignatures());
+    }
+
+    // Internal transactions
+    if (trigger.getInternalTransactionList() != null) {
+      for (InternalTransactionPojo pojo : trigger.getInternalTransactionList()) {
+        TransactionLogTriggerProtos.InternalTransactionPojo.Builder itBuilder =
+            TransactionLogTriggerProtos.InternalTransactionPojo.newBuilder();
+        if (pojo.getHash() != null) itBuilder.setHash(pojo.getHash());
+        itBuilder.setCallValue(pojo.getCallValue());
+        if (pojo.getTokenInfo() != null) itBuilder.putAllTokenInfo(pojo.getTokenInfo());
+        if (pojo.getTransferTo_address() != null) itBuilder.setTransferToAddress(pojo.getTransferTo_address());
+        if (pojo.getData() != null) itBuilder.setData(pojo.getData());
+        if (pojo.getCaller_address() != null) itBuilder.setCallerAddress(pojo.getCaller_address());
+        itBuilder.setRejected(pojo.isRejected());
+        if (pojo.getNote() != null) itBuilder.setNote(pojo.getNote());
+        if (pojo.getExtra() != null) itBuilder.setExtra(pojo.getExtra());
+        builder.addInternalTransactionList(itBuilder.build());
+      }
+    }
+
+    // Logs
+    if (trigger.getLogList() != null) {
+      for (LogPojo logPojo : trigger.getLogList()) {
+        TransactionLogTriggerProtos.LogPojo.Builder logBuilder =
+            TransactionLogTriggerProtos.LogPojo.newBuilder();
+        if (logPojo.getAddress() != null) logBuilder.setAddress(logPojo.getAddress());
+        if (logPojo.getBlockHash() != null) logBuilder.setBlockHash(logPojo.getBlockHash());
+        logBuilder.setBlockNumber(logPojo.getBlockNumber());
+        if (logPojo.getData() != null) logBuilder.setData(logPojo.getData());
+        logBuilder.setLogIndex(logPojo.getLogIndex());
+        if (logPojo.getTopicList() != null) logBuilder.addAllTopicList(logPojo.getTopicList());
+        if (logPojo.getTransactionHash() != null) logBuilder.setTransactionHash(logPojo.getTransactionHash());
+        logBuilder.setTransactionIndex(logPojo.getTransactionIndex());
+        builder.addLogList(logBuilder.build());
+      }
+    }
+
+    // ExtMap
+    if (trigger.getExtMap() != null) {
+      builder.putAllExtMap(trigger.getExtMap());
+    }
+
+    return builder.build();
+  }
+
+  /**
    * Extract transfer information from contract
    */
   private static void extractTransferInfo(TransactionLogTrigger trigger, Transaction.Contract contract) {
@@ -1251,7 +1413,7 @@ public class BlockTransactionPrinter {
     String txId = trx.getTransactionId().toString();
 
     // Handle different output formats
-    if ("trigger".equals(outputFormat)) {
+    if ("trigger".equals(outputFormat) || "trigger-proto".equals(outputFormat)) {
       // Use TransactionLogTrigger format with optional Kafka sending
       String kafkaTopicToUse = useKafka ? kafkaTopic : null;
       String kafkaKey = txId; // Use transaction ID as Kafka key
@@ -1261,8 +1423,35 @@ public class BlockTransactionPrinter {
         logger.warn("Missing transaction data for ID {} in block {} - this may be normal for genesis block transactions", txId, blockNum);
       }
 
-      printTransactionLogTrigger(transactionInfo, transaction, blockId, blockNum, timestamp, transactionIndex,
-          "Transaction #" + (transactionIndex + 1), kafkaTopicToUse, kafkaKey, trx);
+      if ("trigger-proto".equals(outputFormat)) {
+        // Protobuf binary output
+        try {
+          TransactionLogTrigger trigger = createTransactionLogTrigger(
+              transactionInfo, transaction, blockId, blockNum, timestamp, transactionIndex, trx);
+          TransactionLogTriggerProtos.TransactionLogTriggerPB protoMsg = convertToProto(trigger);
+          byte[] payload = protoMsg.toByteArray();
+
+          if (kafkaTopicToUse != null && kafkaProtoProducer != null) {
+            String key = kafkaKey != null ? kafkaKey : trigger.getTransactionId();
+            if (trigger.getTransactionId() != null &&
+                !"N/A".equals(trigger.getTransactionId()) &&
+                !trigger.getTransactionId().isEmpty() &&
+                !trigger.getTransactionId().startsWith("UNKNOWN_TX_")) {
+              sendToKafkaProto(kafkaTopicToUse, key, payload);
+            } else {
+              logger.warn("Skipped Kafka proto send due to invalid transaction ID: {}", trigger.getTransactionId());
+            }
+          } else {
+            // Print base64 to console if no Kafka
+            System.out.println(java.util.Base64.getEncoder().encodeToString(payload));
+          }
+        } catch (Exception e) {
+          logger.error("Error creating protobuf TransactionLogTrigger: " + e.getMessage(), e);
+        }
+      } else {
+        printTransactionLogTrigger(transactionInfo, transaction, blockId, blockNum, timestamp, transactionIndex,
+            "Transaction #" + (transactionIndex + 1), kafkaTopicToUse, kafkaKey, trx);
+      }
     } else {
       // Use traditional formats - synchronize output to prevent interleaving
       synchronized (System.out) {
@@ -1336,7 +1525,7 @@ public class BlockTransactionPrinter {
       System.out.println("Options:");
       System.out.println("  -c <config_file>: Specify a custom configuration file");
       System.out.println("  -d <data_dir>: Specify a custom data directory");
-      System.out.println("  -fm <format>: Output format (json|protobuf|both|trigger), default: both");
+      System.out.println("  -fm <format>: Output format (json|protobuf|both|trigger|trigger-proto), default: both");
       System.out.println("  -kb <brokers>: Kafka broker addresses (e.g., localhost:9092,broker2:9092)");
       System.out.println("  -kt <topic>: Kafka topic name for sending trigger data (requires -kb)");
       System.out.println("  -kafka-rate <rate>: Kafka rate limit in messages/second (0 = no limit, default: 0)");
@@ -1406,15 +1595,16 @@ public class BlockTransactionPrinter {
       logger.error("Kafka topic specified but no brokers provided. Use -kb to specify brokers.");
       return;
     }
-    if (useKafka && !"trigger".equals(outputFormat)) {
-      logger.warn("Kafka output is only supported with 'trigger' format. Current format: {}. Kafka output will be disabled.", outputFormat);
+    if (useKafka && !"trigger".equals(outputFormat) && !"trigger-proto".equals(outputFormat)) {
+      logger.warn("Kafka output is only supported with 'trigger' or 'trigger-proto' format. Current format: {}. Kafka output will be disabled.", outputFormat);
       useKafka = false;
     }
 
     // Validate output format
     if (!outputFormat.equals("json") && !outputFormat.equals("protobuf") &&
-        !outputFormat.equals("both") && !outputFormat.equals("trigger")) {
-      logger.error("Invalid output format: {}. Use 'json', 'protobuf', 'both', or 'trigger'", outputFormat);
+        !outputFormat.equals("both") && !outputFormat.equals("trigger") &&
+        !outputFormat.equals("trigger-proto")) {
+      logger.error("Invalid output format: {}. Use 'json', 'protobuf', 'both', 'trigger', or 'trigger-proto'", outputFormat);
       return;
     }
 
@@ -1454,10 +1644,18 @@ public class BlockTransactionPrinter {
 
       // Initialize Kafka if configured
       if (useKafka) {
-        initKafkaProducer(kafkaBrokers);
-        if (kafkaProducer == null) {
-          logger.warn("Failed to initialize Kafka producer. Continuing without Kafka.");
-          useKafka = false;
+        if ("trigger-proto".equals(outputFormat)) {
+          initKafkaProtoProducer(kafkaBrokers);
+          if (kafkaProtoProducer == null) {
+            logger.warn("Failed to initialize Kafka proto producer. Continuing without Kafka.");
+            useKafka = false;
+          }
+        } else {
+          initKafkaProducer(kafkaBrokers);
+          if (kafkaProducer == null) {
+            logger.warn("Failed to initialize Kafka producer. Continuing without Kafka.");
+            useKafka = false;
+          }
         }
       }
 
