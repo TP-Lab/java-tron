@@ -88,6 +88,16 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
     transactionLogTrigger.setData(Hex.toHexString(trxCapsule
         .getInstance().getRawData().getData().toByteArray()));
 
+    // Extract signatures
+    Transaction transaction = trxCapsule.getInstance();
+    if (transaction.getSignatureCount() > 0) {
+      List<String> signatures = new ArrayList<>();
+      for (int i = 0; i < transaction.getSignatureCount(); i++) {
+        signatures.add(Hex.toHexString(transaction.getSignature(i).toByteArray()));
+      }
+      transactionLogTrigger.setSignatures(signatures);
+    }
+
     TransactionTrace trxTrace = trxCapsule.getTrxTrace();
 
     //result
