@@ -332,10 +332,19 @@ public class TriggerBuilder {
         trigger.setLogList(logList);
       }
 
-      // Memo fee and multi-sign fee - setting to 0 as they're not directly available
-      // in the public TransactionInfo API
-      trigger.setMemoFee(0);
-      trigger.setMultiSignFee(0);
+      // Memo fee: 1 TRX when transaction has a non-empty memo (data field)
+      if (transaction != null && !transaction.getRawData().getData().isEmpty()) {
+        trigger.setMemoFee(1_000_000L);
+      } else {
+        trigger.setMemoFee(0);
+      }
+
+      // Multi-sign fee: 1 TRX when signature count > 1
+      if (transaction != null && transaction.getSignatureCount() > 1) {
+        trigger.setMultiSignFee(1_000_000L);
+      } else {
+        trigger.setMultiSignFee(0);
+      }
 
       // Energy unit price - this might need to be retrieved from chain parameters
       trigger.setEnergyUnitPrice(0);
