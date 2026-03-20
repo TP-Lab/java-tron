@@ -22,11 +22,8 @@ import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
 import org.tron.core.config.DefaultConfig;
 import org.tron.core.config.args.Args;
-import org.tron.core.services.http.JsonFormat;
-import org.tron.core.services.http.Util;
 import org.tron.protos.Protocol.Transaction;
 import org.tron.protos.Protocol.TransactionInfo;
-import org.tron.protos.Protocol.TransactionInfo.Log;
 import org.tron.protos.TransactionLogTriggerProtos;
 
 import org.tron.program.exporter.KafkaSender;
@@ -45,7 +42,7 @@ import org.tron.program.exporter.TriggerProtoConverter;
  * Options:
  *   -c <config_file>   Custom configuration file
  *   -d <data_dir>       Custom data directory
- *   -fm <format>        Output format (json|protobuf|both|trigger|trigger-proto), default: both
+ *   -fm <format>        Output format (trigger|trigger-proto), default: trigger
  *   -kb <brokers>       Kafka broker addresses
  *   -kt <topic>         Kafka topic name
  *   -kafka-rate <rate>  Kafka rate limit in messages/second (0 = no limit)
@@ -66,7 +63,7 @@ public class BlockTransactionPrinter {
     }
 
     // ---- Parse arguments ----
-    String outputFormat = parseStringArg(args, "-fm", "both").toLowerCase();
+    String outputFormat = parseStringArg(args, "-fm", "trigger").toLowerCase();
     String kafkaBrokers = parseStringArg(args, "-kb", null);
     String kafkaTopic = parseStringArg(args, "-kt", null);
     int kafkaRateLimit = parseIntArg(args, "-kafka-rate", 0);
@@ -82,10 +79,6 @@ public class BlockTransactionPrinter {
     }
 
     boolean useKafka = kafkaBrokers != null && kafkaTopic != null;
-    if (useKafka && !"trigger".equals(outputFormat) && !"trigger-proto".equals(outputFormat)) {
-      logger.warn("Kafka output is only supported with 'trigger' or 'trigger-proto' format. Kafka output will be disabled.");
-      useKafka = false;
-    }
 
     // ---- Mode detection ----
     boolean isTransactionMode = "-tx".equals(args[0]);
@@ -263,66 +256,43 @@ public class BlockTransactionPrinter {
         return;
       }
 
-      if ("trigger".equals(outputFormat) || "trigger-proto".equals(outputFormat)) {
-        String blockHash = "N/A";
-        long blockNumber = 0;
-        long timestamp = 0;
+      String blockHash = "N/A";
+      long blockNumber = 0;
+      long timestamp = 0;
 
-        if (transactionInfo != null) {
-          blockNumber = transactionInfo.getBlockNumber();
-          timestamp = transactionInfo.getBlockTimeStamp();
-          try {
-            BlockCapsule blockCapsule = chainBaseManager.getBlockByNum(blockNumber);
-            if (blockCapsule != null) {
-              blockHash = blockCapsule.getBlockId().toString();
-            }
-          } catch (Exception e) {
-            logger.warn("Could not retrieve block hash for block {}: {}", blockNumber, e.getMessage());
+      if (transactionInfo != null) {
+        blockNumber = transactionInfo.getBlockNumber();
+        timestamp = transactionInfo.getBlockTimeStamp();
+        try {
+          BlockCapsule blockCapsule = chainBaseManager.getBlockByNum(blockNumber);
+          if (blockCapsule != null) {
+            blockHash = blockCapsule.getBlockId().toString();
           }
+        } catch (Exception e) {
+          logger.warn("Could not retrieve block hash for block {}: {}", blockNumber, e.getMessage());
         }
+      }
 
-        TransactionLogTrigger trigger = TriggerBuilder.createTransactionLogTrigger(
-            transactionInfo, transaction, blockHash, blockNumber, timestamp, 0, null);
+      TransactionLogTrigger trigger = TriggerBuilder.createTransactionLogTrigger(
+          transactionInfo, transaction, blockHash, blockNumber, timestamp, 0, null);
 
-        if ("trigger-proto".equals(outputFormat)) {
-          TransactionLogTriggerProtos.TransactionLogTriggerPB protoMsg =
-              TriggerProtoConverter.convert(trigger);
-          byte[] payload = protoMsg.toByteArray();
+      if ("trigger-proto".equals(outputFormat)) {
+        TransactionLogTriggerProtos.TransactionLogTriggerPB protoMsg =
+            TriggerProtoConverter.convert(trigger);
+        byte[] payload = protoMsg.toByteArray();
 
-          if (useKafka && kafkaSender.hasBytesProducer()) {
-            kafkaSender.sendBytes(kafkaTopic, transactionId, payload);
-          } else {
-            System.out.println(java.util.Base64.getEncoder().encodeToString(payload));
-          }
+        if (useKafka && kafkaSender.hasBytesProducer()) {
+          kafkaSender.sendBytes(kafkaTopic, transactionId, payload);
         } else {
-          String jsonOutput = JsonUtil.obj2Json(trigger);
-          if (jsonOutput != null) {
-            if (useKafka && kafkaSender.hasStringProducer()) {
-              kafkaSender.send(kafkaTopic, transactionId, jsonOutput);
-            } else {
-              System.out.println(jsonOutput);
-            }
-          }
+          System.out.println(java.util.Base64.getEncoder().encodeToString(payload));
         }
       } else {
-        // Traditional formats
-        if (transactionInfo != null) {
-          List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
-          TransactionInfo converted = transactionInfo.toBuilder()
-              .clearLog().addAllLog(newLogList).build();
-          if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println(JsonFormat.printToString(converted, true));
-          }
-          if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println(converted.toString());
-          }
-        }
-        if (transaction != null) {
-          if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println(JsonFormat.printToString(transaction, true));
-          }
-          if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println(transaction.toString());
+        String jsonOutput = JsonUtil.obj2Json(trigger);
+        if (jsonOutput != null) {
+          if (useKafka && kafkaSender.hasStringProducer()) {
+            kafkaSender.send(kafkaTopic, transactionId, jsonOutput);
+          } else {
+            System.out.println(jsonOutput);
           }
         }
       }
@@ -477,10 +447,8 @@ public class BlockTransactionPrinter {
   }
 
   private static boolean validateArgs(String outputFormat, String kafkaBrokers, String kafkaTopic) {
-    if (!outputFormat.equals("json") && !outputFormat.equals("protobuf")
-        && !outputFormat.equals("both") && !outputFormat.equals("trigger")
-        && !outputFormat.equals("trigger-proto")) {
-      logger.error("Invalid output format: {}. Use 'json', 'protobuf', 'both', 'trigger', or 'trigger-proto'", outputFormat);
+    if (!outputFormat.equals("trigger") && !outputFormat.equals("trigger-proto")) {
+      logger.error("Invalid output format: {}. Use 'trigger' or 'trigger-proto'", outputFormat);
       return false;
     }
     if (kafkaBrokers != null && kafkaTopic == null) {
@@ -515,7 +483,7 @@ public class BlockTransactionPrinter {
     System.out.println("Options:");
     System.out.println("  -c <config_file>: Specify a custom configuration file");
     System.out.println("  -d <data_dir>: Specify a custom data directory");
-    System.out.println("  -fm <format>: Output format (json|protobuf|both|trigger|trigger-proto), default: both");
+    System.out.println("  -fm <format>: Output format (trigger|trigger-proto), default: trigger");
     System.out.println("  -kb <brokers>: Kafka broker addresses");
     System.out.println("  -kt <topic>: Kafka topic name");
     System.out.println("  -kafka-rate <rate>: Kafka rate limit in messages/second (0 = no limit)");
