@@ -101,7 +101,7 @@ public class TransactionRetStore extends TronStoreWithRevoking<TransactionRetCap
         try {
           result.put(blockNum, new TransactionRetCapsule(entry.getValue()));
         } catch (BadItemException e) {
-          log.warn("Skipping malformed TransactionRetCapsule for block {}: {}", blockNum,
+          logger.warn("Skipping malformed TransactionRetCapsule for block {}: {}", blockNum,
               e.getMessage());
         }
       }
