@@ -2,6 +2,7 @@ package org.tron.program;
 
 import com.google.protobuf.ByteString;
 import java.io.File;
+import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -10,6 +11,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.tron.common.application.TronApplicationContext;
@@ -17,6 +19,7 @@ import org.tron.common.logsfilter.trigger.TransactionLogTrigger;
 import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
 import org.tron.common.utils.JsonUtil;
+import org.tron.common.utils.Sha256Hash;
 import org.tron.core.ChainBaseManager;
 import org.tron.core.Constant;
 import org.tron.core.Wallet;
@@ -25,6 +28,7 @@ import org.tron.core.capsule.TransactionCapsule;
 import org.tron.core.capsule.TransactionRetCapsule;
 import org.tron.core.config.DefaultConfig;
 import org.tron.core.config.args.Args;
+import org.tron.core.db.common.iterator.DBIterator;
 import org.tron.protos.Protocol.Transaction;
 import org.tron.protos.Protocol.TransactionInfo;
 import org.tron.protos.TransactionLogTriggerProtos;
@@ -186,83 +190,140 @@ public class BlockTransactionPrinter {
       int totalBlocks = 0;
       int totalTransactions = 0;
       long batchSize = DEFAULT_BATCH_SIZE;
+      DBIterator blockIterator = null;
+      DBIterator transactionRetIterator = null;
 
-      for (long currentStart = startBlockNum; currentStart <= endBlockNum; currentStart += batchSize) {
-        long currentEnd = Math.min(currentStart + batchSize - 1, endBlockNum);
-        long limit = currentEnd - currentStart + 1;
+      try {
+        blockIterator = openIterator(chainBaseManager.getBlockStore().getDb().iterator(),
+            createBlockSeekKey(startBlockNum));
+        transactionRetIterator = openIterator(
+            chainBaseManager.getTransactionRetStore().getDb().iterator(),
+            ByteArray.fromLong(startBlockNum));
 
-        long fetchStartTime = System.nanoTime();
-        List<BlockCapsule> blocks = fetchBlocks(chainBaseManager, currentStart, limit);
-        long fetchBlocksDurationMs = nanosToMillis(System.nanoTime() - fetchStartTime);
-        totalBlocks += blocks.size();
+        for (long currentStart = startBlockNum; currentStart <= endBlockNum; currentStart += batchSize) {
+          long currentEnd = Math.min(currentStart + batchSize - 1, endBlockNum);
+          long limit = currentEnd - currentStart + 1;
 
-        // Batch range scan: 1 RocksDB iterator scan replaces N point lookups
-        Map<Long, TransactionRetCapsule> transactionRetMap = new HashMap<>();
-        long prefetchStartTime = System.nanoTime();
-        if (!blocks.isEmpty()) {
-          long firstBlockNum = blocks.get(0).getNum();
-          long lastBlockNum = blocks.get(blocks.size() - 1).getNum();
-          try {
-            transactionRetMap = chainBaseManager.getTransactionRetStore()
-                .getRange(firstBlockNum, lastBlockNum);
-          } catch (Exception e) {
-            logger.warn("Failed to batch prefetch TransactionRetCapsule [{}, {}]: {}",
-                firstBlockNum, lastBlockNum, e.getMessage());
-          }
-        }
-        long prefetchDurationMs = nanosToMillis(System.nanoTime() - prefetchStartTime);
-
-        AtomicInteger batchTransactions = new AtomicInteger(0);
-        AtomicLong lastBlockInBatch = new AtomicLong(currentStart);
-        int nonEmptyBlockCount = 0;
-        long processingStartTime = System.nanoTime();
-
-        // Concurrent block processing
-        List<CompletableFuture<Void>> blockFutures = new ArrayList<>();
-        final String fOutputFormat = outputFormat;
-        final boolean fUseKafka = useKafka;
-        final String fKafkaTopic = kafkaTopic;
-
-        for (BlockCapsule block : blocks) {
-          final long blockNum = block.getNum();
-          final String blockId = block.getBlockId().toString();
-          final long timestamp = block.getTimeStamp();
-          final List<TransactionCapsule> transactions = block.getTransactions();
-          if (!transactions.isEmpty()) {
-            nonEmptyBlockCount++;
-          }
-          final TransactionRetCapsule prefetchedRet =
-              transactionRetMap.get(blockNum);
-
-          CompletableFuture<Void> blockFuture = CompletableFuture.runAsync(() -> {
-            try {
-              processor.processTransactionsConcurrently(transactions, blockId, blockNum, timestamp,
-                  fOutputFormat, fUseKafka, fKafkaTopic, wallet, chainBaseManager, kafkaSender,
-                  prefetchedRet);
-              batchTransactions.addAndGet(transactions.size());
-              lastBlockInBatch.set(blockNum);
-            } catch (Exception e) {
-              logger.error("Error processing block {}: {}", blockNum, e.getMessage(), e);
+          long fetchStartTime = System.nanoTime();
+          List<BlockCapsule> blocks;
+          if (currentStart == 0) {
+            blocks = fetchBlocks(chainBaseManager, currentStart, limit);
+            if (blockIterator != null) {
+              blockIterator.seek(createBlockSeekKey(currentEnd + 1));
             }
-          }, processor.getBlockExecutor());
+          } else {
+            blocks = fetchBlocks(chainBaseManager, currentStart, limit, blockIterator);
+          }
+          long fetchBlocksDurationMs = nanosToMillis(System.nanoTime() - fetchStartTime);
+          totalBlocks += blocks.size();
 
-          blockFutures.add(blockFuture);
+          // Batch range scan: 1 sequential iterator scan replaces N point lookups
+          Map<Long, TransactionRetCapsule> transactionRetMap = new HashMap<>();
+          long prefetchStartTime = System.nanoTime();
+          if (!blocks.isEmpty()) {
+            long firstBlockNum = blocks.get(0).getNum();
+            long lastBlockNum = blocks.get(blocks.size() - 1).getNum();
+            try {
+              transactionRetMap = fetchTransactionRets(transactionRetIterator,
+                  firstBlockNum, lastBlockNum);
+            } catch (Exception e) {
+              logger.warn("Failed to batch prefetch TransactionRetCapsule [{}, {}]: {}",
+                  firstBlockNum, lastBlockNum, e.getMessage());
+            }
+          }
+          long prefetchDurationMs = nanosToMillis(System.nanoTime() - prefetchStartTime);
+
+          AtomicInteger batchTransactions = new AtomicInteger(0);
+          AtomicLong lastBlockInBatch = new AtomicLong(currentStart);
+          int nonEmptyBlockCount = 0;
+          int prefetchedTransactionInfoCount = countTransactionInfos(transactionRetMap);
+          BatchProcessingProfile batchProfile = new BatchProcessingProfile();
+          long processingStartTime = System.nanoTime();
+
+          // Concurrent block processing
+          List<CompletableFuture<Void>> blockFutures = new ArrayList<>();
+          final String fOutputFormat = outputFormat;
+          final boolean fUseKafka = useKafka;
+          final String fKafkaTopic = kafkaTopic;
+
+          for (BlockCapsule block : blocks) {
+            final long blockNum = block.getNum();
+            final String blockId = block.getBlockId().toString();
+            final long timestamp = block.getTimeStamp();
+            final List<TransactionCapsule> transactions = block.getTransactions();
+            if (!transactions.isEmpty()) {
+              nonEmptyBlockCount++;
+            }
+            final TransactionRetCapsule prefetchedRet =
+                transactionRetMap.get(blockNum);
+
+            CompletableFuture<Void> blockFuture = CompletableFuture.runAsync(() -> {
+              try {
+                TransactionProcessor.BlockProcessingProfile blockProfile =
+                    processor.processTransactionsConcurrently(transactions, blockId, blockNum, timestamp,
+                    fOutputFormat, fUseKafka, fKafkaTopic, wallet, chainBaseManager, kafkaSender,
+                    prefetchedRet);
+                batchProfile.add(blockProfile);
+                batchTransactions.addAndGet(transactions.size());
+                lastBlockInBatch.set(blockNum);
+              } catch (Exception e) {
+                logger.error("Error processing block {}: {}", blockNum, e.getMessage(), e);
+              }
+            }, processor.getBlockExecutor());
+
+            blockFutures.add(blockFuture);
+          }
+
+          try {
+            CompletableFuture.allOf(blockFutures.toArray(new CompletableFuture[0])).get();
+          } catch (Exception e) {
+            logger.error("Error waiting for block batch processing: {}", e.getMessage(), e);
+          }
+
+          long processingDurationMs = nanosToMillis(System.nanoTime() - processingStartTime);
+          totalTransactions += batchTransactions.get();
+          stats.update(blocks.size(), batchTransactions.get(), lastBlockInBatch.get());
+          logger.info(
+              "Batch [{}-{}] | fetched {} blocks ({} non-empty, {} txs) | fetch={}ms, txRetPrefetch={}ms, process={}ms, prefetchedRetBlocks={}, prefetchedTxInfo={} | processDetail: index={}ms, wait={}ms, txWallSum={}ms, txCapsule={}ms, txInfoFallback={}ms/{} hit={}, txFallback={}ms/{} hit={}, txRetFallback={}ms/{} hit={}, trigger={}ms, serialize={}ms, emit={}ms, prefetchHit={}, prefetchMiss={}, missingTxInfo={}, missingTx={}, txErrors={}, json={}, proto={}, legacy={}, kafkaStr={}, kafkaBytes={}, stdout={}, invalidTxId={}, nullJson={}, slowestBlock={}({} tx, {}ms)",
+              currentStart, currentEnd, blocks.size(), nonEmptyBlockCount, batchTransactions.get(),
+              fetchBlocksDurationMs, prefetchDurationMs, processingDurationMs,
+              transactionRetMap.size(), prefetchedTransactionInfoCount,
+              nanosToMillis(batchProfile.getIndexBuildNanos()),
+              nanosToMillis(batchProfile.getFutureWaitNanos()),
+              nanosToMillis(batchProfile.getTransactionWallNanos()),
+              nanosToMillis(batchProfile.getTransactionCapsuleReadNanos()),
+              nanosToMillis(batchProfile.getTransactionInfoFallbackQueryNanos()),
+              batchProfile.getTransactionInfoFallbackQueryCount(),
+              batchProfile.getTransactionInfoFallbackHitCount(),
+              nanosToMillis(batchProfile.getTransactionFallbackQueryNanos()),
+              batchProfile.getTransactionFallbackQueryCount(),
+              batchProfile.getTransactionFallbackHitCount(),
+              nanosToMillis(batchProfile.getTransactionRetFallbackReadNanos()),
+              batchProfile.getTransactionRetFallbackReadCount(),
+              batchProfile.getTransactionRetFallbackHitCount(),
+              nanosToMillis(batchProfile.getTriggerBuildNanos()),
+              nanosToMillis(batchProfile.getSerializationNanos()),
+              nanosToMillis(batchProfile.getOutputNanos()),
+              batchProfile.getPrefetchedTransactionInfoHitCount(),
+              batchProfile.getPrefetchedTransactionInfoMissCount(),
+              batchProfile.getMissingTransactionInfoCount(),
+              batchProfile.getMissingTransactionCount(),
+              batchProfile.getTransactionErrorCount(),
+              batchProfile.getTriggerJsonCount(),
+              batchProfile.getTriggerProtoCount(),
+              batchProfile.getLegacyOutputCount(),
+              batchProfile.getKafkaStringSendCount(),
+              batchProfile.getKafkaBytesSendCount(),
+              batchProfile.getStdoutOutputCount(),
+              batchProfile.getInvalidTransactionIdSkipCount(),
+              batchProfile.getSerializationNullCount(),
+              batchProfile.getSlowestBlockNum(),
+              batchProfile.getSlowestBlockTxCount(),
+              nanosToMillis(batchProfile.getSlowestBlockWallNanos()));
         }
-
-        try {
-          CompletableFuture.allOf(blockFutures.toArray(new CompletableFuture[0])).get();
-        } catch (Exception e) {
-          logger.error("Error waiting for block batch processing: {}", e.getMessage(), e);
-        }
-
-        long processingDurationMs = nanosToMillis(System.nanoTime() - processingStartTime);
-        totalTransactions += batchTransactions.get();
-        stats.update(blocks.size(), batchTransactions.get(), lastBlockInBatch.get());
-        logger.info(
-            "Batch [{}-{}] | fetched {} blocks ({} non-empty, {} txs) | fetch={}ms, txRetPrefetch={}ms, process={}ms, prefetchedRet={}",
-            currentStart, currentEnd, blocks.size(), nonEmptyBlockCount, batchTransactions.get(),
-            fetchBlocksDurationMs, prefetchDurationMs, processingDurationMs,
-            transactionRetMap.size());
+      } finally {
+        closeQuietly(blockIterator);
+        closeQuietly(transactionRetIterator);
       }
 
       stats.logFinal();
@@ -397,6 +458,14 @@ public class BlockTransactionPrinter {
   // ========================================================================
 
   private static List<BlockCapsule> fetchBlocks(ChainBaseManager chainBaseManager,
+      long currentStart, long limit, DBIterator blockIterator) {
+    if (blockIterator != null) {
+      return fetchBlocksFromIterator(blockIterator, currentStart, limit);
+    }
+    return fetchBlocks(chainBaseManager, currentStart, limit);
+  }
+
+  private static List<BlockCapsule> fetchBlocks(ChainBaseManager chainBaseManager,
       long currentStart, long limit) {
     if (currentStart == 0) {
       List<BlockCapsule> blocks = new ArrayList<>();
@@ -428,6 +497,303 @@ public class BlockTransactionPrinter {
       return blocks;
     }
     return chainBaseManager.getBlockStore().getLimitNumber(currentStart, limit);
+  }
+
+  private static List<BlockCapsule> fetchBlocksFromIterator(DBIterator blockIterator,
+      long currentStart, long limit) {
+    List<BlockCapsule> blocks = new ArrayList<>();
+    long currentEnd = currentStart + limit - 1;
+
+    while (blockIterator.valid() && blocks.size() < limit) {
+      boolean advanceIterator = true;
+      try {
+        BlockCapsule block = new BlockCapsule(blockIterator.getValue());
+        long blockNum = block.getNum();
+        if (blockNum < currentStart) {
+          continue;
+        }
+        if (blockNum > currentEnd) {
+          advanceIterator = false;
+          break;
+        }
+        blocks.add(block);
+      } catch (Exception e) {
+        logger.warn("Could not parse block near {}: {}", currentStart, e.getMessage());
+      } finally {
+        if (advanceIterator) {
+          blockIterator.next();
+        }
+      }
+    }
+
+    return blocks;
+  }
+
+  private static Map<Long, TransactionRetCapsule> fetchTransactionRets(DBIterator transactionRetIterator,
+      long startBlock, long endBlock) {
+    Map<Long, TransactionRetCapsule> result = new HashMap<>();
+    if (transactionRetIterator == null || endBlock < startBlock) {
+      return result;
+    }
+
+    while (transactionRetIterator.valid()) {
+      long blockNum = ByteArray.toLong(transactionRetIterator.getKey());
+      if (blockNum < startBlock) {
+        transactionRetIterator.next();
+        continue;
+      }
+      if (blockNum > endBlock) {
+        break;
+      }
+
+      try {
+        result.put(blockNum, new TransactionRetCapsule(transactionRetIterator.getValue()));
+      } catch (Exception e) {
+        logger.warn("Skipping malformed TransactionRetCapsule for block {}: {}", blockNum,
+            e.getMessage());
+      } finally {
+        transactionRetIterator.next();
+      }
+    }
+
+    return result;
+  }
+
+  private static int countTransactionInfos(Map<Long, TransactionRetCapsule> transactionRetMap) {
+    int total = 0;
+    for (TransactionRetCapsule capsule : transactionRetMap.values()) {
+      if (capsule != null && capsule.getInstance() != null) {
+        total += capsule.getInstance().getTransactioninfoList().size();
+      }
+    }
+    return total;
+  }
+
+  private static DBIterator openIterator(java.util.Iterator<Map.Entry<byte[], byte[]>> iterator,
+      byte[] startKey) {
+    if (!(iterator instanceof DBIterator)) {
+      return null;
+    }
+    DBIterator dbIterator = (DBIterator) iterator;
+    dbIterator.seek(startKey);
+    return dbIterator;
+  }
+
+  private static byte[] createBlockSeekKey(long blockNum) {
+    return new BlockCapsule.BlockId(Sha256Hash.ZERO_HASH, blockNum).getBytes();
+  }
+
+  private static void closeQuietly(DBIterator iterator) {
+    if (iterator == null) {
+      return;
+    }
+    try {
+      iterator.close();
+    } catch (IOException e) {
+      logger.warn("Failed to close iterator: {}", e.getMessage());
+    }
+  }
+
+  private static final class BatchProcessingProfile {
+
+    private final LongAdder indexBuildNanos = new LongAdder();
+    private final LongAdder futureWaitNanos = new LongAdder();
+    private final LongAdder transactionWallNanos = new LongAdder();
+    private final LongAdder transactionCapsuleReadNanos = new LongAdder();
+    private final LongAdder transactionInfoFallbackQueryNanos = new LongAdder();
+    private final LongAdder transactionFallbackQueryNanos = new LongAdder();
+    private final LongAdder transactionRetFallbackReadNanos = new LongAdder();
+    private final LongAdder triggerBuildNanos = new LongAdder();
+    private final LongAdder serializationNanos = new LongAdder();
+    private final LongAdder outputNanos = new LongAdder();
+    private final AtomicInteger prefetchedTransactionInfoHitCount = new AtomicInteger();
+    private final AtomicInteger prefetchedTransactionInfoMissCount = new AtomicInteger();
+    private final AtomicInteger transactionInfoFallbackQueryCount = new AtomicInteger();
+    private final AtomicInteger transactionInfoFallbackHitCount = new AtomicInteger();
+    private final AtomicInteger transactionFallbackQueryCount = new AtomicInteger();
+    private final AtomicInteger transactionFallbackHitCount = new AtomicInteger();
+    private final AtomicInteger transactionRetFallbackReadCount = new AtomicInteger();
+    private final AtomicInteger transactionRetFallbackHitCount = new AtomicInteger();
+    private final AtomicInteger missingTransactionInfoCount = new AtomicInteger();
+    private final AtomicInteger missingTransactionCount = new AtomicInteger();
+    private final AtomicInteger transactionErrorCount = new AtomicInteger();
+    private final AtomicInteger triggerJsonCount = new AtomicInteger();
+    private final AtomicInteger triggerProtoCount = new AtomicInteger();
+    private final AtomicInteger legacyOutputCount = new AtomicInteger();
+    private final AtomicInteger kafkaStringSendCount = new AtomicInteger();
+    private final AtomicInteger kafkaBytesSendCount = new AtomicInteger();
+    private final AtomicInteger stdoutOutputCount = new AtomicInteger();
+    private final AtomicInteger invalidTransactionIdSkipCount = new AtomicInteger();
+    private final AtomicInteger serializationNullCount = new AtomicInteger();
+    private long slowestBlockNum = -1;
+    private int slowestBlockTxCount = 0;
+    private long slowestBlockWallNanos = 0;
+
+    public synchronized void add(TransactionProcessor.BlockProcessingProfile profile) {
+      indexBuildNanos.add(profile.getIndexBuildNanos());
+      futureWaitNanos.add(profile.getFutureWaitNanos());
+      transactionWallNanos.add(profile.getTransactionWallNanos());
+      transactionCapsuleReadNanos.add(profile.getTransactionCapsuleReadNanos());
+      transactionInfoFallbackQueryNanos.add(profile.getTransactionInfoFallbackQueryNanos());
+      transactionFallbackQueryNanos.add(profile.getTransactionFallbackQueryNanos());
+      transactionRetFallbackReadNanos.add(profile.getTransactionRetFallbackReadNanos());
+      triggerBuildNanos.add(profile.getTriggerBuildNanos());
+      serializationNanos.add(profile.getSerializationNanos());
+      outputNanos.add(profile.getOutputNanos());
+      prefetchedTransactionInfoHitCount.addAndGet(profile.getPrefetchedTransactionInfoHitCount());
+      prefetchedTransactionInfoMissCount.addAndGet(profile.getPrefetchedTransactionInfoMissCount());
+      transactionInfoFallbackQueryCount.addAndGet(profile.getTransactionInfoFallbackQueryCount());
+      transactionInfoFallbackHitCount.addAndGet(profile.getTransactionInfoFallbackHitCount());
+      transactionFallbackQueryCount.addAndGet(profile.getTransactionFallbackQueryCount());
+      transactionFallbackHitCount.addAndGet(profile.getTransactionFallbackHitCount());
+      transactionRetFallbackReadCount.addAndGet(profile.getTransactionRetFallbackReadCount());
+      transactionRetFallbackHitCount.addAndGet(profile.getTransactionRetFallbackHitCount());
+      missingTransactionInfoCount.addAndGet(profile.getMissingTransactionInfoCount());
+      missingTransactionCount.addAndGet(profile.getMissingTransactionCount());
+      transactionErrorCount.addAndGet(profile.getTransactionErrorCount());
+      triggerJsonCount.addAndGet(profile.getTriggerJsonCount());
+      triggerProtoCount.addAndGet(profile.getTriggerProtoCount());
+      legacyOutputCount.addAndGet(profile.getLegacyOutputCount());
+      kafkaStringSendCount.addAndGet(profile.getKafkaStringSendCount());
+      kafkaBytesSendCount.addAndGet(profile.getKafkaBytesSendCount());
+      stdoutOutputCount.addAndGet(profile.getStdoutOutputCount());
+      invalidTransactionIdSkipCount.addAndGet(profile.getInvalidTransactionIdSkipCount());
+      serializationNullCount.addAndGet(profile.getSerializationNullCount());
+
+      if (profile.getBlockWallNanos() > slowestBlockWallNanos) {
+        slowestBlockWallNanos = profile.getBlockWallNanos();
+        slowestBlockNum = profile.getBlockNum();
+        slowestBlockTxCount = profile.getTransactionCount();
+      }
+    }
+
+    public long getIndexBuildNanos() {
+      return indexBuildNanos.sum();
+    }
+
+    public long getFutureWaitNanos() {
+      return futureWaitNanos.sum();
+    }
+
+    public long getTransactionWallNanos() {
+      return transactionWallNanos.sum();
+    }
+
+    public long getTransactionCapsuleReadNanos() {
+      return transactionCapsuleReadNanos.sum();
+    }
+
+    public long getTransactionInfoFallbackQueryNanos() {
+      return transactionInfoFallbackQueryNanos.sum();
+    }
+
+    public int getTransactionInfoFallbackQueryCount() {
+      return transactionInfoFallbackQueryCount.get();
+    }
+
+    public int getTransactionInfoFallbackHitCount() {
+      return transactionInfoFallbackHitCount.get();
+    }
+
+    public long getTransactionFallbackQueryNanos() {
+      return transactionFallbackQueryNanos.sum();
+    }
+
+    public int getTransactionFallbackQueryCount() {
+      return transactionFallbackQueryCount.get();
+    }
+
+    public int getTransactionFallbackHitCount() {
+      return transactionFallbackHitCount.get();
+    }
+
+    public long getTransactionRetFallbackReadNanos() {
+      return transactionRetFallbackReadNanos.sum();
+    }
+
+    public int getTransactionRetFallbackReadCount() {
+      return transactionRetFallbackReadCount.get();
+    }
+
+    public int getTransactionRetFallbackHitCount() {
+      return transactionRetFallbackHitCount.get();
+    }
+
+    public long getTriggerBuildNanos() {
+      return triggerBuildNanos.sum();
+    }
+
+    public long getSerializationNanos() {
+      return serializationNanos.sum();
+    }
+
+    public long getOutputNanos() {
+      return outputNanos.sum();
+    }
+
+    public int getPrefetchedTransactionInfoHitCount() {
+      return prefetchedTransactionInfoHitCount.get();
+    }
+
+    public int getPrefetchedTransactionInfoMissCount() {
+      return prefetchedTransactionInfoMissCount.get();
+    }
+
+    public int getMissingTransactionInfoCount() {
+      return missingTransactionInfoCount.get();
+    }
+
+    public int getMissingTransactionCount() {
+      return missingTransactionCount.get();
+    }
+
+    public int getTransactionErrorCount() {
+      return transactionErrorCount.get();
+    }
+
+    public int getTriggerJsonCount() {
+      return triggerJsonCount.get();
+    }
+
+    public int getTriggerProtoCount() {
+      return triggerProtoCount.get();
+    }
+
+    public int getLegacyOutputCount() {
+      return legacyOutputCount.get();
+    }
+
+    public int getKafkaStringSendCount() {
+      return kafkaStringSendCount.get();
+    }
+
+    public int getKafkaBytesSendCount() {
+      return kafkaBytesSendCount.get();
+    }
+
+    public int getStdoutOutputCount() {
+      return stdoutOutputCount.get();
+    }
+
+    public int getInvalidTransactionIdSkipCount() {
+      return invalidTransactionIdSkipCount.get();
+    }
+
+    public int getSerializationNullCount() {
+      return serializationNullCount.get();
+    }
+
+    public long getSlowestBlockNum() {
+      return slowestBlockNum;
+    }
+
+    public int getSlowestBlockTxCount() {
+      return slowestBlockTxCount;
+    }
+
+    public long getSlowestBlockWallNanos() {
+      return slowestBlockWallNanos;
+    }
   }
 
   private static long getLowestBlockNum(ChainBaseManager chainBaseManager) {
