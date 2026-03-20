@@ -52,7 +52,7 @@ public class TransactionHistoryStore extends TronStoreWithRevoking<TransactionIn
         }
         return result;
       } catch (RocksDBException | BadItemException e) {
-        log.debug("TransactionHistoryStore multiGet failed, fallback to point lookup: {}",
+        logger.debug("TransactionHistoryStore multiGet failed, fallback to point lookup: {}",
             e.getMessage());
       }
     }
