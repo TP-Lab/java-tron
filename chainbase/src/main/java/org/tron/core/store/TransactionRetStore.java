@@ -98,7 +98,12 @@ public class TransactionRetStore extends TronStoreWithRevoking<TransactionRetCap
         break;
       }
       if (entry.getValue() != null) {
-        result.put(blockNum, new TransactionRetCapsule(entry.getValue()));
+        try {
+          result.put(blockNum, new TransactionRetCapsule(entry.getValue()));
+        } catch (BadItemException e) {
+          log.warn("Skipping malformed TransactionRetCapsule for block {}: {}", blockNum,
+              e.getMessage());
+        }
       }
     }
     return result;
