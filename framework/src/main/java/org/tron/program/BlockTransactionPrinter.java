@@ -4,7 +4,9 @@ import com.google.protobuf.ByteString;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -20,6 +22,7 @@ import org.tron.core.Constant;
 import org.tron.core.Wallet;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
+import org.tron.core.capsule.TransactionRetCapsule;
 import org.tron.core.config.DefaultConfig;
 import org.tron.core.config.args.Args;
 import org.tron.protos.Protocol.Transaction;
@@ -191,6 +194,24 @@ public class BlockTransactionPrinter {
         List<BlockCapsule> blocks = fetchBlocks(chainBaseManager, currentStart, limit);
         totalBlocks += blocks.size();
 
+        // Pre-fetch TransactionRetCapsule sequentially in main thread to leverage OS read-ahead
+        // instead of having concurrent threads perform random I/O on TransactionRetStore.
+        Map<Long, TransactionRetCapsule> transactionRetMap = new HashMap<>();
+        for (BlockCapsule block : blocks) {
+          long blockNum = block.getNum();
+          try {
+            TransactionRetCapsule ret =
+                chainBaseManager.getTransactionRetStore()
+                    .getTransactionInfoByBlockNum(ByteArray.fromLong(blockNum));
+            if (ret != null) {
+              transactionRetMap.put(blockNum, ret);
+            }
+          } catch (Exception e) {
+            logger.warn("Failed to prefetch TransactionRetCapsule for block {}: {}", blockNum,
+                e.getMessage());
+          }
+        }
+
         AtomicInteger batchTransactions = new AtomicInteger(0);
         AtomicLong lastBlockInBatch = new AtomicLong(currentStart);
 
@@ -205,11 +226,14 @@ public class BlockTransactionPrinter {
           final String blockId = block.getBlockId().toString();
           final long timestamp = block.getTimeStamp();
           final List<TransactionCapsule> transactions = block.getTransactions();
+          final TransactionRetCapsule prefetchedRet =
+              transactionRetMap.get(blockNum);
 
           CompletableFuture<Void> blockFuture = CompletableFuture.runAsync(() -> {
             try {
               processor.processTransactionsConcurrently(transactions, blockId, blockNum, timestamp,
-                  fOutputFormat, fUseKafka, fKafkaTopic, wallet, chainBaseManager, kafkaSender);
+                  fOutputFormat, fUseKafka, fKafkaTopic, wallet, chainBaseManager, kafkaSender,
+                  prefetchedRet);
               batchTransactions.addAndGet(transactions.size());
               lastBlockInBatch.set(blockNum);
             } catch (Exception e) {

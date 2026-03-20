@@ -92,6 +92,17 @@ public class TransactionProcessor implements Closeable {
       String outputFormat, boolean useKafka, String kafkaTopic,
       Wallet wallet, ChainBaseManager chainBaseManager,
       KafkaSender kafkaSender) {
+    processTransactionsConcurrently(transactions, blockId, blockNum, timestamp,
+        outputFormat, useKafka, kafkaTopic, wallet, chainBaseManager, kafkaSender, null);
+  }
+
+  public void processTransactionsConcurrently(
+      List<TransactionCapsule> transactions,
+      String blockId, long blockNum, long timestamp,
+      String outputFormat, boolean useKafka, String kafkaTopic,
+      Wallet wallet, ChainBaseManager chainBaseManager,
+      KafkaSender kafkaSender,
+      org.tron.core.capsule.TransactionRetCapsule prefetchedTransactionRet) {
 
     if (transactions.isEmpty()) {
       return;
@@ -100,32 +111,34 @@ public class TransactionProcessor implements Closeable {
     logger.debug("Processing {} transactions concurrently...", transactions.size());
 
     // ====================================================================
-    // 第一步：批量预取 TransactionInfo（核心优化点）
+    // 第一步：构建 TransactionInfo 索引（优先使用外部预读数据，零 I/O）
     // ====================================================================
-    // 将 N 次随机 I/O 转换为 1 次顺序 I/O
     Map<String, TransactionInfo> transactionInfoMap = new HashMap<>();
-    try {
-      if (chainBaseManager != null && chainBaseManager.getTransactionRetStore() != null) {
-        byte[] blockNumKey = ByteArray.fromLong(blockNum);
-        org.tron.core.capsule.TransactionRetCapsule transactionRetCapsule =
-            chainBaseManager.getTransactionRetStore().getTransactionInfoByBlockNum(blockNumKey);
+    org.tron.core.capsule.TransactionRetCapsule transactionRetCapsule = prefetchedTransactionRet;
 
-        if (transactionRetCapsule != null && transactionRetCapsule.getInstance() != null) {
-          for (TransactionInfo info
-              : transactionRetCapsule.getInstance().getTransactioninfoList()) {
-            String txId = ByteArray.toHexString(info.getId().toByteArray());
-            transactionInfoMap.put(txId, info);
-          }
-          logger.debug("Batch prefetched {} TransactionInfo for block {}",
-              transactionInfoMap.size(), blockNum);
-        } else {
-          logger.debug("No TransactionRetCapsule found for block {}, "
-              + "falling back to individual queries", blockNum);
+    // 如果外部没有预读，则自行读取（降级）
+    if (transactionRetCapsule == null) {
+      try {
+        if (chainBaseManager != null && chainBaseManager.getTransactionRetStore() != null) {
+          byte[] blockNumKey = ByteArray.fromLong(blockNum);
+          transactionRetCapsule =
+              chainBaseManager.getTransactionRetStore().getTransactionInfoByBlockNum(blockNumKey);
+          logger.debug("Fallback: read TransactionRetCapsule for block {}", blockNum);
         }
+      } catch (Exception e) {
+        logger.warn("Failed to read TransactionRetCapsule for block {}: {}", blockNum,
+            e.getMessage());
       }
-    } catch (Exception e) {
-      logger.warn("Failed to batch prefetch TransactionInfo for block {}: {}, "
-          + "falling back to individual queries", blockNum, e.getMessage());
+    }
+
+    if (transactionRetCapsule != null && transactionRetCapsule.getInstance() != null) {
+      for (TransactionInfo info : transactionRetCapsule.getInstance().getTransactioninfoList()) {
+        String txId = ByteArray.toHexString(info.getId().toByteArray());
+        transactionInfoMap.put(txId, info);
+      }
+      logger.debug("Indexed {} TransactionInfo for block {}", transactionInfoMap.size(), blockNum);
+    } else {
+      logger.debug("No TransactionRetCapsule for block {}", blockNum);
     }
 
     // ====================================================================
