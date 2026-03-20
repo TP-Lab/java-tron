@@ -191,11 +191,14 @@ public class BlockTransactionPrinter {
         long currentEnd = Math.min(currentStart + batchSize - 1, endBlockNum);
         long limit = currentEnd - currentStart + 1;
 
+        long fetchStartTime = System.nanoTime();
         List<BlockCapsule> blocks = fetchBlocks(chainBaseManager, currentStart, limit);
+        long fetchBlocksDurationMs = nanosToMillis(System.nanoTime() - fetchStartTime);
         totalBlocks += blocks.size();
 
         // Batch range scan: 1 RocksDB iterator scan replaces N point lookups
         Map<Long, TransactionRetCapsule> transactionRetMap = new HashMap<>();
+        long prefetchStartTime = System.nanoTime();
         if (!blocks.isEmpty()) {
           long firstBlockNum = blocks.get(0).getNum();
           long lastBlockNum = blocks.get(blocks.size() - 1).getNum();
@@ -207,9 +210,12 @@ public class BlockTransactionPrinter {
                 firstBlockNum, lastBlockNum, e.getMessage());
           }
         }
+        long prefetchDurationMs = nanosToMillis(System.nanoTime() - prefetchStartTime);
 
         AtomicInteger batchTransactions = new AtomicInteger(0);
         AtomicLong lastBlockInBatch = new AtomicLong(currentStart);
+        int nonEmptyBlockCount = 0;
+        long processingStartTime = System.nanoTime();
 
         // Concurrent block processing
         List<CompletableFuture<Void>> blockFutures = new ArrayList<>();
@@ -222,6 +228,9 @@ public class BlockTransactionPrinter {
           final String blockId = block.getBlockId().toString();
           final long timestamp = block.getTimeStamp();
           final List<TransactionCapsule> transactions = block.getTransactions();
+          if (!transactions.isEmpty()) {
+            nonEmptyBlockCount++;
+          }
           final TransactionRetCapsule prefetchedRet =
               transactionRetMap.get(blockNum);
 
@@ -246,8 +255,14 @@ public class BlockTransactionPrinter {
           logger.error("Error waiting for block batch processing: {}", e.getMessage(), e);
         }
 
+        long processingDurationMs = nanosToMillis(System.nanoTime() - processingStartTime);
         totalTransactions += batchTransactions.get();
         stats.update(blocks.size(), batchTransactions.get(), lastBlockInBatch.get());
+        logger.info(
+            "Batch [{}-{}] | fetched {} blocks ({} non-empty, {} txs) | fetch={}ms, txRetPrefetch={}ms, process={}ms, prefetchedRet={}",
+            currentStart, currentEnd, blocks.size(), nonEmptyBlockCount, batchTransactions.get(),
+            fetchBlocksDurationMs, prefetchDurationMs, processingDurationMs,
+            transactionRetMap.size());
       }
 
       stats.logFinal();
@@ -472,6 +487,10 @@ public class BlockTransactionPrinter {
     } catch (NumberFormatException e) {
       return defaultValue;
     }
+  }
+
+  private static long nanosToMillis(long nanos) {
+    return nanos / 1_000_000L;
   }
 
   private static boolean validateArgs(String outputFormat, String kafkaBrokers, String kafkaTopic) {

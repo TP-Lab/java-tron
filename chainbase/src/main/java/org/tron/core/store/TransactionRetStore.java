@@ -13,6 +13,7 @@ import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
 import org.tron.core.capsule.TransactionInfoCapsule;
 import org.tron.core.capsule.TransactionRetCapsule;
+import org.tron.core.db.common.iterator.DBIterator;
 import org.tron.core.db.TransactionStore;
 import org.tron.core.db.TronStoreWithRevoking;
 import org.tron.core.exception.BadItemException;
@@ -86,26 +87,42 @@ public class TransactionRetStore extends TronStoreWithRevoking<TransactionRetCap
 
   /**
    * Batch range scan: returns TransactionRetCapsule for all blocks in [startBlock, endBlock].
-   * Uses a single RocksDB range scan (iterator seek + forward scan) instead of N point lookups.
+   * Uses a direct iterator seek on the underlying DB and stops exactly at endBlock.
+   *
+   * <p>TransactionRetStore only persists blocks that actually contain transactions. If we scan by
+   * "record count" instead of "block number upper bound", sparse ranges can over-read far beyond
+   * endBlock and create significant I/O amplification.
    */
   public Map<Long, TransactionRetCapsule> getRange(long startBlock, long endBlock) {
-    long limit = endBlock - startBlock + 1;
-    Map<byte[], byte[]> raw = revokingDB.getNext(ByteArray.fromLong(startBlock), limit);
     Map<Long, TransactionRetCapsule> result = new LinkedHashMap<>();
-    for (Map.Entry<byte[], byte[]> entry : raw.entrySet()) {
-      long blockNum = ByteArray.toLong(entry.getKey());
-      if (blockNum > endBlock) {
-        break;
-      }
-      if (entry.getValue() != null) {
-        try {
-          result.put(blockNum, new TransactionRetCapsule(entry.getValue()));
-        } catch (BadItemException e) {
-          logger.warn("Skipping malformed TransactionRetCapsule for block {}: {}", blockNum,
-              e.getMessage());
-        }
-      }
+    if (endBlock < startBlock) {
+      return result;
     }
+
+    try (DBIterator iterator = (DBIterator) getDb().iterator()) {
+      iterator.seek(ByteArray.fromLong(startBlock));
+      while (iterator.valid()) {
+        long blockNum = ByteArray.toLong(iterator.getKey());
+        if (blockNum > endBlock) {
+          break;
+        }
+
+        byte[] value = iterator.getValue();
+        if (value != null) {
+          try {
+            result.put(blockNum, new TransactionRetCapsule(value));
+          } catch (BadItemException e) {
+            logger.warn("Skipping malformed TransactionRetCapsule for block {}: {}", blockNum,
+                e.getMessage());
+          }
+        }
+        iterator.next();
+      }
+    } catch (Exception e) {
+      logger.warn("Failed to range scan TransactionRetStore [{}, {}]: {}",
+          startBlock, endBlock, e.getMessage());
+    }
+
     return result;
   }
 
