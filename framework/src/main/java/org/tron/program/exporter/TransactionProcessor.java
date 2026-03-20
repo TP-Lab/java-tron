@@ -129,23 +129,16 @@ public class TransactionProcessor implements Closeable {
     }
 
     // ====================================================================
-    // 第二步：构建交易索引映射，避免并发闭包捕获问题
-    // ====================================================================
-    Map<String, Integer> txIndexMap = new HashMap<>();
-    for (int i = 0; i < transactions.size(); i++) {
-      txIndexMap.put(transactions.get(i).getTransactionId().toString(), i);
-    }
-
-    // ====================================================================
-    // 第三步：并发处理每个交易（使用预取的数据）
+    // 第二步：并发处理每个交易（使用预取的数据）
     // ====================================================================
     List<CompletableFuture<Void>> futures = new ArrayList<>();
     AtomicInteger processedCount = new AtomicInteger(0);
+    final int txCount = transactions.size();
 
-    for (int i = 0; i < transactions.size(); i++) {
+    for (int i = 0; i < txCount; i++) {
       final TransactionCapsule trx = transactions.get(i);
       final String txId = trx.getTransactionId().toString();
-      final int transactionIndex = txIndexMap.get(txId);
+      final int transactionIndex = i;
       final TransactionInfo prefetchedTransactionInfo = transactionInfoMap.get(txId);
 
       CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
