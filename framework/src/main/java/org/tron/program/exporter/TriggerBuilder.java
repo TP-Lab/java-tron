@@ -12,6 +12,7 @@ import org.tron.common.logsfilter.trigger.TransactionLogTrigger;
 import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.Sha256Hash;
 import org.tron.common.utils.StringUtil;
+import org.tron.core.ChainBaseManager;
 import org.tron.core.capsule.TransactionCapsule;
 import org.tron.protos.Protocol.InternalTransaction;
 import org.tron.protos.Protocol.ResourceReceipt;
@@ -38,7 +39,7 @@ public class TriggerBuilder {
   public static TransactionLogTrigger createTransactionLogTrigger(
       TransactionInfo transactionInfo, Transaction transaction,
       String blockHash, long blockNumber, long timestamp, int transactionIndex,
-      TransactionCapsule trxCapsule) {
+      TransactionCapsule trxCapsule, ChainBaseManager chainBaseManager) {
 
     TransactionLogTrigger trigger = new TransactionLogTrigger();
 
@@ -332,10 +333,36 @@ public class TriggerBuilder {
         trigger.setLogList(logList);
       }
 
-      // Memo fee and multi-sign fee - setting to 0 as they're not directly available
-      // in the public TransactionInfo API
-      trigger.setMemoFee(0);
-      trigger.setMultiSignFee(0);
+      // Memo fee: charged when transaction has a non-empty memo (data field)
+      if (transaction != null && !transaction.getRawData().getData().isEmpty()) {
+        long memoFee = 0;
+        try {
+          if (chainBaseManager != null) {
+            memoFee = chainBaseManager.getDynamicPropertiesStore().getMemoFee();
+          }
+        } catch (Exception e) {
+          logger.warn("Could not read memoFee from chain, defaulting to 0: {}", e.getMessage());
+        }
+        trigger.setMemoFee(memoFee);
+      } else {
+        trigger.setMemoFee(0);
+      }
+
+      // Multi-sign fee: charged when signature count > 1
+      if (transaction != null && transaction.getSignatureCount() > 1) {
+        long multiSignFee = 1_000_000L;
+        try {
+          if (chainBaseManager != null) {
+            multiSignFee = chainBaseManager.getDynamicPropertiesStore().getMultiSignFee();
+          }
+        } catch (Exception e) {
+          logger.warn("Could not read multiSignFee from chain, defaulting to 1 TRX: {}",
+              e.getMessage());
+        }
+        trigger.setMultiSignFee(multiSignFee);
+      } else {
+        trigger.setMultiSignFee(0);
+      }
 
       // Energy unit price - this might need to be retrieved from chain parameters
       trigger.setEnergyUnitPrice(0);
