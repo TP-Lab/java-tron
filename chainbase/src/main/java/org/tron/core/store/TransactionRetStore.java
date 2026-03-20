@@ -1,6 +1,8 @@
 package org.tron.core.store;
 
 import com.google.protobuf.ByteString;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.BooleanUtils;
@@ -80,6 +82,26 @@ public class TransactionRetStore extends TronStoreWithRevoking<TransactionRetCap
     }
 
     return new TransactionRetCapsule(value);
+  }
+
+  /**
+   * Batch range scan: returns TransactionRetCapsule for all blocks in [startBlock, endBlock].
+   * Uses a single RocksDB range scan (iterator seek + forward scan) instead of N point lookups.
+   */
+  public Map<Long, TransactionRetCapsule> getRange(long startBlock, long endBlock) {
+    long limit = endBlock - startBlock + 1;
+    Map<byte[], byte[]> raw = revokingDB.getNext(ByteArray.fromLong(startBlock), limit);
+    Map<Long, TransactionRetCapsule> result = new LinkedHashMap<>();
+    for (Map.Entry<byte[], byte[]> entry : raw.entrySet()) {
+      long blockNum = ByteArray.toLong(entry.getKey());
+      if (blockNum > endBlock) {
+        break;
+      }
+      if (entry.getValue() != null) {
+        result.put(blockNum, new TransactionRetCapsule(entry.getValue()));
+      }
+    }
+    return result;
   }
 
 }

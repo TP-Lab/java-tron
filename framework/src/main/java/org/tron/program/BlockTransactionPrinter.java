@@ -194,21 +194,17 @@ public class BlockTransactionPrinter {
         List<BlockCapsule> blocks = fetchBlocks(chainBaseManager, currentStart, limit);
         totalBlocks += blocks.size();
 
-        // Pre-fetch TransactionRetCapsule sequentially in main thread to leverage OS read-ahead
-        // instead of having concurrent threads perform random I/O on TransactionRetStore.
+        // Batch range scan: 1 RocksDB iterator scan replaces N point lookups
         Map<Long, TransactionRetCapsule> transactionRetMap = new HashMap<>();
-        for (BlockCapsule block : blocks) {
-          long blockNum = block.getNum();
+        if (!blocks.isEmpty()) {
+          long firstBlockNum = blocks.get(0).getNum();
+          long lastBlockNum = blocks.get(blocks.size() - 1).getNum();
           try {
-            TransactionRetCapsule ret =
-                chainBaseManager.getTransactionRetStore()
-                    .getTransactionInfoByBlockNum(ByteArray.fromLong(blockNum));
-            if (ret != null) {
-              transactionRetMap.put(blockNum, ret);
-            }
+            transactionRetMap = chainBaseManager.getTransactionRetStore()
+                .getRange(firstBlockNum, lastBlockNum);
           } catch (Exception e) {
-            logger.warn("Failed to prefetch TransactionRetCapsule for block {}: {}", blockNum,
-                e.getMessage());
+            logger.warn("Failed to batch prefetch TransactionRetCapsule [{}, {}]: {}",
+                firstBlockNum, lastBlockNum, e.getMessage());
           }
         }
 
