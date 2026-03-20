@@ -55,7 +55,7 @@ import org.tron.program.exporter.TriggerProtoConverter;
 public class BlockTransactionPrinter {
 
   private static final int DEFAULT_THREAD_POOL_SIZE = Runtime.getRuntime().availableProcessors() * 2;
-  private static final long DEFAULT_BATCH_SIZE = 1000;
+  private static final long DEFAULT_BATCH_SIZE = 200;
 
   public static void main(String[] args) {
     logger.info("BlockTransactionPrinter started");
