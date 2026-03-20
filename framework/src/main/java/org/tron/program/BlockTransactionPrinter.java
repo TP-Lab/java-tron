@@ -55,6 +55,7 @@ import org.tron.program.exporter.TriggerProtoConverter;
 public class BlockTransactionPrinter {
 
   private static final int DEFAULT_THREAD_POOL_SIZE = Runtime.getRuntime().availableProcessors() * 2;
+  private static final long DEFAULT_BATCH_SIZE = 1000;
 
   public static void main(String[] args) {
     logger.info("BlockTransactionPrinter started");
@@ -116,10 +117,9 @@ public class BlockTransactionPrinter {
     KafkaSender kafkaSender = new KafkaSender();
     ProcessingStats stats = new ProcessingStats();
     TransactionProcessor processor = new TransactionProcessor(customThreadPoolSize);
+    TronApplicationContext context = null;
 
     try {
-      // Initialize stats & thread pool
-      stats.initialize(startBlockNum);
 
       // Initialize Kafka
       if (useKafka) {
@@ -140,8 +140,8 @@ public class BlockTransactionPrinter {
       }
 
       // ---- Initialize TRON environment ----
-      String[] configArgs = buildConfigArgs(args, isTransactionMode);
-      TronApplicationContext context = setupTronContext(configArgs);
+      String[] configArgs = buildConfigArgs(args);
+      context = setupTronContext(configArgs);
 
       ChainBaseManager chainBaseManager = context.getBean(ChainBaseManager.class);
       Wallet wallet = context.getBean(Wallet.class);
@@ -155,7 +155,6 @@ public class BlockTransactionPrinter {
 
       if (latestBlockNum == 0 && lowestBlockNum == 0) {
         System.out.println("Warning: Database appears to be empty or not properly initialized.");
-        context.close();
         return;
       }
 
@@ -163,7 +162,6 @@ public class BlockTransactionPrinter {
       if (isTransactionMode) {
         handleTransactionMode(transactionId, outputFormat, useKafka, kafkaTopic,
             kafkaSender, wallet, chainBaseManager);
-        context.close();
         System.out.println("=== Read-Only Database Query Completed - Exiting Program ===");
         return;
       }
@@ -172,16 +170,18 @@ public class BlockTransactionPrinter {
       if (startBlockNum < lowestBlockNum || endBlockNum > latestBlockNum) {
         System.out.println("Error: Requested block range (" + startBlockNum + " to " + endBlockNum
             + ") is outside the available range (" + lowestBlockNum + " to " + latestBlockNum + ")");
-        context.close();
         return;
       }
+
+      // Initialize stats only in block range mode
+      stats.initialize(startBlockNum);
 
       System.out.println("=== Printing transactions from block " + startBlockNum + " to " + endBlockNum + " ===");
 
       // ---- Main processing loop ----
       int totalBlocks = 0;
       int totalTransactions = 0;
-      long batchSize = 1000;
+      long batchSize = DEFAULT_BATCH_SIZE;
 
       for (long currentStart = startBlockNum; currentStart <= endBlockNum; currentStart += batchSize) {
         long currentEnd = Math.min(currentStart + batchSize - 1, endBlockNum);
@@ -231,13 +231,15 @@ public class BlockTransactionPrinter {
 
       stats.logFinal();
       logger.info("Processing completed - Total blocks: {}, Total transactions: {}", totalBlocks, totalTransactions);
-      context.close();
 
     } catch (Exception e) {
       logger.error("Error: {}", e.getMessage(), e);
     } finally {
       processor.close();
       kafkaSender.close();
+      if (context != null) {
+        context.close();
+      }
     }
   }
 
@@ -325,8 +327,7 @@ public class BlockTransactionPrinter {
         }
       }
     } catch (Exception e) {
-      System.out.println("Error querying transaction: " + e.getMessage());
-      e.printStackTrace();
+      logger.error("Error querying transaction: {}", e.getMessage(), e);
     }
   }
 
@@ -493,7 +494,7 @@ public class BlockTransactionPrinter {
     return true;
   }
 
-  private static String[] buildConfigArgs(String[] args, boolean isTransactionMode) {
+  private static String[] buildConfigArgs(String[] args) {
     int configStartIndex = 2;
     List<String> filteredArgs = new ArrayList<>();
     for (int i = configStartIndex; i < args.length; i++) {
