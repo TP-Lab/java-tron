@@ -19,10 +19,12 @@ import org.tron.common.logsfilter.trigger.TransactionLogTrigger;
 import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
 import org.tron.common.utils.JsonUtil;
+import org.tron.common.utils.Property;
 import org.tron.common.utils.Sha256Hash;
 import org.tron.core.ChainBaseManager;
 import org.tron.core.Constant;
 import org.tron.core.Wallet;
+import org.tron.core.config.args.Storage;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
 import org.tron.core.capsule.TransactionRetCapsule;
@@ -60,6 +62,9 @@ public class BlockTransactionPrinter {
 
   private static final int DEFAULT_THREAD_POOL_SIZE = Runtime.getRuntime().availableProcessors() * 2;
   private static final long DEFAULT_BATCH_SIZE = 200;
+  private static final long KB = 1024L;
+  private static final long MB = 1024L * KB;
+  private static final long GB = 1024L * MB;
 
   public static void main(String[] args) {
     logger.info("BlockTransactionPrinter started");
@@ -437,6 +442,7 @@ public class BlockTransactionPrinter {
     if (Args.getInstance().getStorage() != null) {
       Args.getInstance().getStorage().setDbSync(false);
       Args.getInstance().getStorage().setMaxFlushCount(0);
+      applyReadOptimizations(Args.getInstance().getStorage());
     }
 
     String databasePath = Args.getInstance().getOutputDirectory();
@@ -454,6 +460,47 @@ public class BlockTransactionPrinter {
     context.refresh();
     logger.info("Database context initialized successfully");
     return context;
+  }
+
+  private static void applyReadOptimizations(Storage storage) {
+    if (storage == null) {
+      return;
+    }
+
+    String dbEngine = storage.getDbEngine();
+    optimizeDb(storage, "transactionHistoryStore", 8 * GB, dbEngine);
+    optimizeDb(storage, "block", 2 * GB, dbEngine);
+    optimizeDb(storage, "trans", 1 * GB, dbEngine);
+    optimizeDb(storage, "transactionRetStore", 1 * GB, dbEngine);
+
+    logger.info("Optimized hot DBs ({}) - transactionHistoryStore=8GB, block=2GB, "
+            + "trans=1GB, transactionRetStore=1GB, max_open_files=-1, write_buffer=4KB",
+        dbEngine);
+  }
+
+  private static void optimizeDb(Storage storage, String dbName, long cacheSize, String dbEngine) {
+    Property property = storage.getOrCreateProperty(dbName);
+    if (property.getDbOptions() == null) {
+      property.setDbOptions(storage.newDefaultDbOptions(dbName));
+    }
+
+    property.getDbOptions().cacheSize(cacheSize);
+    property.getDbOptions().maxOpenFiles(-1);
+    property.getDbOptions().writeBufferSize(4 * KB);
+
+    if ("ROCKSDB".equalsIgnoreCase(dbEngine)) {
+      try {
+        property.getDbOptions().getClass()
+            .getMethod("disableAutoCompaction", boolean.class)
+            .invoke(property.getDbOptions(), true);
+        property.getDbOptions().getClass()
+            .getMethod("adviseRandomOnOpen", boolean.class)
+            .invoke(property.getDbOptions(), true);
+      } catch (Exception e) {
+        logger.warn("Failed to apply RocksDB-specific optimizations for {}: {}",
+            dbName, e.getMessage());
+      }
+    }
   }
 
   // ========================================================================

@@ -435,6 +435,18 @@ public class Storage {
     storage = config.getConfig(PROPERTIES_CONFIG_DB_KEY);
   }
 
+  public Property getOrCreateProperty(String name) {
+    if (propertyMap == null) {
+      propertyMap = Maps.newConcurrentMap();
+    }
+    return propertyMap.computeIfAbsent(name, dbName -> {
+      Property property = new Property();
+      property.setName(dbName);
+      property.setDbOptions(newDefaultDbOptions(dbName));
+      return property;
+    });
+  }
+
   public Options newDefaultDbOptions(String name ) {
     // first fetch origin default
     Options options =  DbOptionalsUtils.newDefaultDbOptions(name, this.defaultDbOptions);

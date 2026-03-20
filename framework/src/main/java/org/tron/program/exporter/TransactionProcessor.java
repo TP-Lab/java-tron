@@ -21,6 +21,7 @@ import org.tron.core.ChainBaseManager;
 import org.tron.core.Wallet;
 import org.tron.core.capsule.TransactionCapsule;
 import org.tron.core.capsule.TransactionInfoCapsule;
+import org.tron.core.db2.common.WrappedByteArray;
 import org.tron.core.services.http.JsonFormat;
 import org.tron.core.services.http.Util;
 import org.tron.protos.Protocol.Transaction;
@@ -153,22 +154,20 @@ public class TransactionProcessor implements Closeable {
           blockNum);
       if (chainBaseManager != null && chainBaseManager.getTransactionHistoryStore() != null) {
         long historyPrefetchStartTime = System.nanoTime();
-        int historyPrefetchCount = 0;
+        List<byte[]> transactionIds = new ArrayList<>(transactions.size());
         for (TransactionCapsule transactionCapsule : transactions) {
-          try {
-            TransactionInfoCapsule transactionInfoCapsule = chainBaseManager
-                .getTransactionHistoryStore()
-                .get(transactionCapsule.getTransactionId().getBytes());
-            if (transactionInfoCapsule != null && transactionInfoCapsule.getInstance() != null) {
-              TransactionInfo info = transactionInfoCapsule.getInstance();
-              String txId = ByteArray.toHexString(info.getId().toByteArray());
-              transactionInfoMap.put(txId, info);
-              historyPrefetchCount++;
-            }
-          } catch (Exception e) {
-            profile.incrementTransactionErrors();
-            logger.debug("TransactionHistoryStore lookup failed for tx {} in block {}: {}",
-                transactionCapsule.getTransactionId(), blockNum, e.getMessage());
+          transactionIds.add(transactionCapsule.getTransactionId().getBytes());
+        }
+        Map<WrappedByteArray, TransactionInfoCapsule> transactionInfoCapsules = chainBaseManager
+            .getTransactionHistoryStore()
+            .getUnchecked(transactionIds);
+        int historyPrefetchCount = 0;
+        for (TransactionInfoCapsule transactionInfoCapsule : transactionInfoCapsules.values()) {
+          if (transactionInfoCapsule != null && transactionInfoCapsule.getInstance() != null) {
+            TransactionInfo info = transactionInfoCapsule.getInstance();
+            String txId = ByteArray.toHexString(info.getId().toByteArray());
+            transactionInfoMap.put(txId, info);
+            historyPrefetchCount++;
           }
         }
         profile.recordTransactionHistoryPrefetch(
