@@ -62,6 +62,7 @@ public class BlockTransactionPrinter {
 
   private static final int DEFAULT_THREAD_POOL_SIZE = Runtime.getRuntime().availableProcessors() * 2;
   private static final long DEFAULT_BATCH_SIZE = 200;
+  private static final int MIN_WRITE_BUFFER_SIZE_BYTES = 4 * 1024;
   private static final long KB = 1024L;
   private static final long MB = 1024L * KB;
   private static final long GB = 1024L * MB;
@@ -486,7 +487,7 @@ public class BlockTransactionPrinter {
 
     property.getDbOptions().cacheSize(cacheSize);
     property.getDbOptions().maxOpenFiles(-1);
-    property.getDbOptions().writeBufferSize(4 * KB);
+    property.getDbOptions().writeBufferSize(MIN_WRITE_BUFFER_SIZE_BYTES);
 
     if ("ROCKSDB".equalsIgnoreCase(dbEngine)) {
       try {
