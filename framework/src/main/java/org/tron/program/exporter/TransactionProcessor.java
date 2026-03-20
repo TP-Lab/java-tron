@@ -20,6 +20,7 @@ import org.tron.common.utils.JsonUtil;
 import org.tron.core.ChainBaseManager;
 import org.tron.core.Wallet;
 import org.tron.core.capsule.TransactionCapsule;
+import org.tron.core.capsule.TransactionInfoCapsule;
 import org.tron.core.services.http.JsonFormat;
 import org.tron.core.services.http.Util;
 import org.tron.protos.Protocol.Transaction;
@@ -148,7 +149,33 @@ public class TransactionProcessor implements Closeable {
       }
       logger.debug("Indexed {} TransactionInfo for block {}", transactionInfoMap.size(), blockNum);
     } else {
-      logger.debug("No TransactionRetCapsule for block {}", blockNum);
+      logger.debug("No TransactionRetCapsule for block {}, trying TransactionHistoryStore",
+          blockNum);
+      if (chainBaseManager != null && chainBaseManager.getTransactionHistoryStore() != null) {
+        long historyPrefetchStartTime = System.nanoTime();
+        int historyPrefetchCount = 0;
+        for (TransactionCapsule transactionCapsule : transactions) {
+          try {
+            TransactionInfoCapsule transactionInfoCapsule = chainBaseManager
+                .getTransactionHistoryStore()
+                .get(transactionCapsule.getTransactionId().getBytes());
+            if (transactionInfoCapsule != null && transactionInfoCapsule.getInstance() != null) {
+              TransactionInfo info = transactionInfoCapsule.getInstance();
+              String txId = ByteArray.toHexString(info.getId().toByteArray());
+              transactionInfoMap.put(txId, info);
+              historyPrefetchCount++;
+            }
+          } catch (Exception e) {
+            profile.incrementTransactionErrors();
+            logger.debug("TransactionHistoryStore lookup failed for tx {} in block {}: {}",
+                transactionCapsule.getTransactionId(), blockNum, e.getMessage());
+          }
+        }
+        profile.recordTransactionHistoryPrefetch(
+            System.nanoTime() - historyPrefetchStartTime, historyPrefetchCount);
+        logger.debug("Indexed {} TransactionInfo from TransactionHistoryStore for block {}",
+            historyPrefetchCount, blockNum);
+      }
     }
     profile.setIndexedTransactionInfoCount(transactionInfoMap.size());
     profile.addIndexBuildNanos(System.nanoTime() - indexBuildStartTime);
@@ -470,6 +497,7 @@ public class TransactionProcessor implements Closeable {
     private final LongAdder transactionInfoFallbackQueryNanos = new LongAdder();
     private final LongAdder transactionFallbackQueryNanos = new LongAdder();
     private final LongAdder transactionRetFallbackReadNanos = new LongAdder();
+    private final LongAdder transactionHistoryPrefetchNanos = new LongAdder();
     private final LongAdder triggerBuildNanos = new LongAdder();
     private final LongAdder serializationNanos = new LongAdder();
     private final LongAdder outputNanos = new LongAdder();
@@ -482,6 +510,8 @@ public class TransactionProcessor implements Closeable {
     private final AtomicInteger transactionFallbackHitCount = new AtomicInteger();
     private final AtomicInteger transactionRetFallbackReadCount = new AtomicInteger();
     private final AtomicInteger transactionRetFallbackHitCount = new AtomicInteger();
+    private final AtomicInteger transactionHistoryPrefetchCount = new AtomicInteger();
+    private final AtomicInteger transactionHistoryPrefetchInfoCount = new AtomicInteger();
     private final AtomicInteger missingTransactionInfoCount = new AtomicInteger();
     private final AtomicInteger missingTransactionCount = new AtomicInteger();
     private final AtomicInteger transactionErrorCount = new AtomicInteger();
@@ -613,6 +643,24 @@ public class TransactionProcessor implements Closeable {
 
     public int getTransactionRetFallbackHitCount() {
       return transactionRetFallbackHitCount.get();
+    }
+
+    public void recordTransactionHistoryPrefetch(long nanos, int infoCount) {
+      transactionHistoryPrefetchNanos.add(nanos);
+      transactionHistoryPrefetchCount.incrementAndGet();
+      transactionHistoryPrefetchInfoCount.addAndGet(infoCount);
+    }
+
+    public long getTransactionHistoryPrefetchNanos() {
+      return transactionHistoryPrefetchNanos.sum();
+    }
+
+    public int getTransactionHistoryPrefetchCount() {
+      return transactionHistoryPrefetchCount.get();
+    }
+
+    public int getTransactionHistoryPrefetchInfoCount() {
+      return transactionHistoryPrefetchInfoCount.get();
     }
 
     public void addTriggerBuildNanos(long nanos) {

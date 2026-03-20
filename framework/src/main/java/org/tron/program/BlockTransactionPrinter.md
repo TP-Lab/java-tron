@@ -99,5 +99,81 @@ java -cp ... org.tron.program.BlockTransactionPrinter 5000 6000 \
 - 区块号必须在数据库实际存储范围内，程序启动时会打印可用范围。
 - `-tx` 模式下交易 ID 必须是 **64 位十六进制字符串**。
 - `-kb` 和 `-kt` 必须同时指定，否则校验失败退出。
-- 区块以每批 **1000 个**为单位并发处理，多个区块的交易在线程池中并行执行。
+- 区块当前以每批 **200 个**为单位处理，多个区块的交易在线程池中并行执行。
 - 所有资源（数据库上下文、Kafka 连接、线程池）在程序退出时自动释放。
+
+---
+
+## 性能诊断日志
+
+从 2026-03 的性能排查开始，`BlockTransactionPrinter` 增加了批次级性能画像日志，用于区分瓶颈到底在：
+
+- 区块读取
+- `transactionRetStore` 预取
+- `transactionHistoryStore` 降级预取
+- 逐笔 `TransactionInfo` 回退查询
+- `TriggerBuilder` 构建
+- JSON / protobuf 序列化
+- Kafka 发送或控制台输出
+
+### 日志示例
+
+```text
+Batch [1627996-1628195] | fetched 200 blocks (190 non-empty, 1250 txs)
+| fetch=1ms, txRetPrefetch=0ms, process=4083ms
+| prefetchedRetBlocks=0, prefetchedTxInfo=0
+| processDetail: index=1ms, wait=64774ms, txWallSum=129914ms, txCapsule=0ms,
+txInfoFallback=129585ms/1250 hit=1250, txFallback=0ms/0 hit=0,
+txRetFallback=1ms/190 hit=0, historyPrefetch=..., trigger=88ms,
+serialize=179ms, emit=56ms, ...
+```
+
+### 关键字段
+
+| 字段 | 含义 |
+|------|------|
+| `fetch` | 区块读取耗时 |
+| `txRetPrefetch` | 批次级 `transactionRetStore` 预取耗时 |
+| `prefetchedRetBlocks` | 批次中命中的 `TransactionRetCapsule` 数 |
+| `prefetchedTxInfo` | 批次中预取到的 `TransactionInfo` 总数 |
+| `index` | 构建 `txId -> TransactionInfo` 索引耗时 |
+| `txRetFallback` | 区块级 `transactionRetStore` 回退读取次数和耗时 |
+| `historyPrefetch` | 区块级 `transactionHistoryStore` 预取次数、耗时和命中条数 |
+| `txInfoFallback` | 逐笔 `wallet.getTransactionInfoById()` 的次数和耗时 |
+| `txFallback` | 逐笔 `wallet.getTransactionById()` 的次数和耗时 |
+| `trigger` | `TriggerBuilder.createTransactionLogTrigger()` 耗时 |
+| `serialize` | JSON / protobuf 序列化耗时 |
+| `emit` | Kafka 发送或 stdout 输出耗时 |
+| `prefetchHit / prefetchMiss` | 交易级预取命中 / miss 统计 |
+| `slowestBlock` | 当前批次最慢区块及其耗时 |
+
+### 快速判断方法
+
+- `fetch` 大：瓶颈在区块读取。
+- `txRetPrefetch` 大：瓶颈在 `transactionRetStore`。
+- `historyPrefetch` 大且 `txInfoFallback` 很小：说明 `transactionRetStore` 不可用，但 `transactionHistoryStore` 的区块级降级生效。
+- `txInfoFallback` 大：仍在逐笔查 `TransactionInfo`，这是最优先需要消除的路径。
+- `trigger` / `serialize` / `emit` 大：瓶颈已经不在数据库读取，应转向 CPU 编码或 Kafka 输出。
+
+### 本次真实排查结论
+
+在 2026-03 的一次真实排查中，日志显示：
+
+- `prefetchedRetBlocks=0`
+- `prefetchedTxInfo=0`
+- `txRetFallback=1ms/190 hit=0`
+- `txInfoFallback=129585ms/1250 hit=1250`
+
+这说明：
+
+1. 目标区间内 `transactionRetStore` 没有提供可用的区块级 `TransactionInfo`
+2. 主瓶颈不是区块读取，也不是 `TriggerBuilder`
+3. 真正的主瓶颈是每笔交易都走了 `wallet.getTransactionInfoById()` 回退查询
+
+因此，后续优化的核心逻辑是：
+
+1. 继续保留 `transactionRetStore` 作为首选路径
+2. 若按块未命中，则直接使用 `transactionHistoryStore` 做区块级预取
+3. 尽可能避免退化为逐笔 `wallet.getTransactionInfoById()`
+
+> 更完整的复盘见：`docs/IO_OPTIMIZATION_EXPLANATION.md`

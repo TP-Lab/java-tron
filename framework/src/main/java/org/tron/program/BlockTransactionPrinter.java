@@ -284,7 +284,7 @@ public class BlockTransactionPrinter {
           totalTransactions += batchTransactions.get();
           stats.update(blocks.size(), batchTransactions.get(), lastBlockInBatch.get());
           logger.info(
-              "Batch [{}-{}] | fetched {} blocks ({} non-empty, {} txs) | fetch={}ms, txRetPrefetch={}ms, process={}ms, prefetchedRetBlocks={}, prefetchedTxInfo={} | processDetail: index={}ms, wait={}ms, txWallSum={}ms, txCapsule={}ms, txInfoFallback={}ms/{} hit={}, txFallback={}ms/{} hit={}, txRetFallback={}ms/{} hit={}, trigger={}ms, serialize={}ms, emit={}ms, prefetchHit={}, prefetchMiss={}, missingTxInfo={}, missingTx={}, txErrors={}, json={}, proto={}, legacy={}, kafkaStr={}, kafkaBytes={}, stdout={}, invalidTxId={}, nullJson={}, slowestBlock={}({} tx, {}ms)",
+              "Batch [{}-{}] | fetched {} blocks ({} non-empty, {} txs) | fetch={}ms, txRetPrefetch={}ms, process={}ms, prefetchedRetBlocks={}, prefetchedTxInfo={} | processDetail: index={}ms, wait={}ms, txWallSum={}ms, txCapsule={}ms, txInfoFallback={}ms/{} hit={}, txFallback={}ms/{} hit={}, txRetFallback={}ms/{} hit={}, historyPrefetch={}ms/{} infos={}, trigger={}ms, serialize={}ms, emit={}ms, prefetchHit={}, prefetchMiss={}, missingTxInfo={}, missingTx={}, txErrors={}, json={}, proto={}, legacy={}, kafkaStr={}, kafkaBytes={}, stdout={}, invalidTxId={}, nullJson={}, slowestBlock={}({} tx, {}ms)",
               currentStart, currentEnd, blocks.size(), nonEmptyBlockCount, batchTransactions.get(),
               fetchBlocksDurationMs, prefetchDurationMs, processingDurationMs,
               transactionRetMap.size(), prefetchedTransactionInfoCount,
@@ -301,6 +301,9 @@ public class BlockTransactionPrinter {
               nanosToMillis(batchProfile.getTransactionRetFallbackReadNanos()),
               batchProfile.getTransactionRetFallbackReadCount(),
               batchProfile.getTransactionRetFallbackHitCount(),
+              nanosToMillis(batchProfile.getTransactionHistoryPrefetchNanos()),
+              batchProfile.getTransactionHistoryPrefetchCount(),
+              batchProfile.getTransactionHistoryPrefetchInfoCount(),
               nanosToMillis(batchProfile.getTriggerBuildNanos()),
               nanosToMillis(batchProfile.getSerializationNanos()),
               nanosToMillis(batchProfile.getOutputNanos()),
@@ -603,6 +606,7 @@ public class BlockTransactionPrinter {
     private final LongAdder transactionInfoFallbackQueryNanos = new LongAdder();
     private final LongAdder transactionFallbackQueryNanos = new LongAdder();
     private final LongAdder transactionRetFallbackReadNanos = new LongAdder();
+    private final LongAdder transactionHistoryPrefetchNanos = new LongAdder();
     private final LongAdder triggerBuildNanos = new LongAdder();
     private final LongAdder serializationNanos = new LongAdder();
     private final LongAdder outputNanos = new LongAdder();
@@ -614,6 +618,8 @@ public class BlockTransactionPrinter {
     private final AtomicInteger transactionFallbackHitCount = new AtomicInteger();
     private final AtomicInteger transactionRetFallbackReadCount = new AtomicInteger();
     private final AtomicInteger transactionRetFallbackHitCount = new AtomicInteger();
+    private final AtomicInteger transactionHistoryPrefetchCount = new AtomicInteger();
+    private final AtomicInteger transactionHistoryPrefetchInfoCount = new AtomicInteger();
     private final AtomicInteger missingTransactionInfoCount = new AtomicInteger();
     private final AtomicInteger missingTransactionCount = new AtomicInteger();
     private final AtomicInteger transactionErrorCount = new AtomicInteger();
@@ -637,6 +643,7 @@ public class BlockTransactionPrinter {
       transactionInfoFallbackQueryNanos.add(profile.getTransactionInfoFallbackQueryNanos());
       transactionFallbackQueryNanos.add(profile.getTransactionFallbackQueryNanos());
       transactionRetFallbackReadNanos.add(profile.getTransactionRetFallbackReadNanos());
+      transactionHistoryPrefetchNanos.add(profile.getTransactionHistoryPrefetchNanos());
       triggerBuildNanos.add(profile.getTriggerBuildNanos());
       serializationNanos.add(profile.getSerializationNanos());
       outputNanos.add(profile.getOutputNanos());
@@ -648,6 +655,8 @@ public class BlockTransactionPrinter {
       transactionFallbackHitCount.addAndGet(profile.getTransactionFallbackHitCount());
       transactionRetFallbackReadCount.addAndGet(profile.getTransactionRetFallbackReadCount());
       transactionRetFallbackHitCount.addAndGet(profile.getTransactionRetFallbackHitCount());
+      transactionHistoryPrefetchCount.addAndGet(profile.getTransactionHistoryPrefetchCount());
+      transactionHistoryPrefetchInfoCount.addAndGet(profile.getTransactionHistoryPrefetchInfoCount());
       missingTransactionInfoCount.addAndGet(profile.getMissingTransactionInfoCount());
       missingTransactionCount.addAndGet(profile.getMissingTransactionCount());
       transactionErrorCount.addAndGet(profile.getTransactionErrorCount());
@@ -717,6 +726,18 @@ public class BlockTransactionPrinter {
 
     public int getTransactionRetFallbackHitCount() {
       return transactionRetFallbackHitCount.get();
+    }
+
+    public long getTransactionHistoryPrefetchNanos() {
+      return transactionHistoryPrefetchNanos.sum();
+    }
+
+    public int getTransactionHistoryPrefetchCount() {
+      return transactionHistoryPrefetchCount.get();
+    }
+
+    public int getTransactionHistoryPrefetchInfoCount() {
+      return transactionHistoryPrefetchInfoCount.get();
     }
 
     public long getTriggerBuildNanos() {
