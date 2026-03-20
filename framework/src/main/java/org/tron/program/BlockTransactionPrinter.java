@@ -96,8 +96,10 @@ public class BlockTransactionPrinter {
       } else {
         startBlockNum = Long.parseLong(args[0]);
         endBlockNum = Long.parseLong(args[1]);
-        if (startBlockNum < 0 || endBlockNum < 0 || startBlockNum > endBlockNum) {
-          logger.error("Invalid block range. Start block must be <= end block and both must be >= 0");
+        if (startBlockNum < 0 || (endBlockNum < 0 && endBlockNum != -1)
+            || (endBlockNum >= 0 && startBlockNum > endBlockNum)) {
+          logger.error("Invalid block range. Start block must be >= 0, "
+              + "end block must be >= start block or -1 (latest)");
           return;
         }
       }
@@ -149,6 +151,12 @@ public class BlockTransactionPrinter {
       if (latestBlockNum == 0 && lowestBlockNum == 0) {
         System.out.println("Warning: Database appears to be empty or not properly initialized.");
         return;
+      }
+
+      // Resolve -1 to the latest block number
+      if (!isTransactionMode && endBlockNum == -1) {
+        endBlockNum = latestBlockNum;
+        logger.info("endBlockNum resolved to latest: {}", endBlockNum);
       }
 
       // ---- Transaction mode ----
