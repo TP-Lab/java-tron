@@ -380,7 +380,7 @@ public class TransactionHistorySequentialExporter {
     }
 
     bucketStats.recordTransactionRetFallbackBlock(block.getTransactions().size());
-    logger.info("Use transactionRetStore fallback for block={} missingPreparedTx={} txCount={}",
+    logger.debug("Use transactionRetStore fallback for block={} missingPreparedTx={} txCount={}",
         block.getNum(), preparedBlockRet.getMissingTransactionCount(),
         block.getTransactions().size());
     return PreparedBlockRet.complete(fallbackRet);
