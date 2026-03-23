@@ -7,6 +7,8 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j(topic = "app")
 public class ProcessingStats {
+  private static final long BLOCK_PROGRESS_INTERVAL = 5000;
+  private static final long TIME_PROGRESS_INTERVAL_MS = 10000;
 
   private long startTime;
   private long totalBlocksProcessed;
@@ -37,7 +39,8 @@ public class ProcessingStats {
     long currentTime = System.currentTimeMillis();
     long timeSinceLastStats = currentTime - lastStatsTime;
 
-    if (timeSinceLastStats >= 10000 || totalBlocksProcessed - lastBlocksProcessed >= 100) {
+    if (timeSinceLastStats >= TIME_PROGRESS_INTERVAL_MS
+        || totalBlocksProcessed - lastBlocksProcessed >= BLOCK_PROGRESS_INTERVAL) {
       long totalTime = currentTime - startTime;
       double totalTimeSeconds = totalTime / 1000.0;
       double intervalTimeSeconds = timeSinceLastStats / 1000.0;

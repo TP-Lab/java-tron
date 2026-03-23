@@ -68,6 +68,7 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 - 首次跑大区间：`-phase all`
 - 需要重复验证导出逻辑：先 `prepare`，后多次 `export`
 - `export` 阶段要求 `-tmp` 指向已存在的 manifest 目录
+- `export` 阶段会以 `-tmp` 中的 manifest 为基础，只处理与命令行区块范围相交且 `exported=false` 的 bucket
 
 ---
 
@@ -112,48 +113,77 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 
 ## 使用示例
 
-### 一次跑完整链路
+以下示例假设：
+
+- 已在仓库根目录执行过构建，生成 `build/libs/framework-1.0.0.jar` 和 `build/libs/FullNode.jar`
+- 当前环境为 Linux / macOS，classpath 分隔符使用 `:`
+- Windows 环境请将 classpath 分隔符改为 `;`
+
+### 只做 prepare：从指定起点扫到数据库最新块
 
 ```bash
-java -cp ... org.tron.program.TransactionHistorySequentialExporter 1000000 2000000 \
-  -c /path/to/config.conf \
-  -d /path/to/database \
-  -phase all \
-  -bucket-blocks 10000 \
+java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
+  org.tron.program.TransactionHistorySequentialExporter 5489445 -1 \
+  -c ./main_net_config.conf \
+  -d ./output-directory \
+  -phase prepare \
+  -tmp /data1/export-tmp \
+  -bucket-blocks 1000
+```
+
+适用场景：
+
+- 先顺序扫描 `transactionHistoryStore`
+- 把目标区间切成 shard，供后续多次 `export` 复用
+- 适合先确认 `transactionHistoryStore` 覆盖范围，再决定是否直接导出
+
+### 基于已有 shard 做 export
+
+```bash
+java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
+  org.tron.program.TransactionHistorySequentialExporter 5489445 -1 \
+  -c ./main_net_config.conf \
+  -d ./output-directory \
+  -phase export \
+  -tmp /data1/export-tmp \
   -fm trigger
 ```
 
-### 只做 prepare
+适用场景：
+
+- `prepare` 已完成
+- 需要重复验证导出逻辑、格式或回退到 `transactionRetStore` 的行为
+- 不想重复全扫 `transactionHistoryStore`
+- 需要基于同一个 `-tmp` 目录，从更靠后的区块继续导出
+
+### 一次跑完整链路：prepare + export
 
 ```bash
-java -cp ... org.tron.program.TransactionHistorySequentialExporter 1000000 2000000 \
-  -c /path/to/config.conf \
-  -d /path/to/database \
-  -phase prepare \
-  -tmp /data/export-tmp \
-  -bucket-blocks 20000
+java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
+  org.tron.program.TransactionHistorySequentialExporter 5489445 -1 \
+  -c ./main_net_config.conf \
+  -d ./output-directory \
+  -phase all \
+  -tmp /data1/export-tmp \
+  -bucket-blocks 1000 \
+  -fm trigger
 ```
 
-### 复用已有 shard 做 export
+适用场景：
 
-```bash
-java -cp ... org.tron.program.TransactionHistorySequentialExporter 1000000 2000000 \
-  -c /path/to/config.conf \
-  -d /path/to/database \
-  -phase export \
-  -tmp /data/export-tmp \
-  -fm trigger-proto \
-  -kb localhost:9092 \
-  -kt tron-history-topic
-```
+- 首次跑某个大区间
+- 希望一次完成 shard 准备和最终导出
 
 ### 导出到 Kafka 并限制速率
 
 ```bash
-java -cp ... org.tron.program.TransactionHistorySequentialExporter 5000000 -1 \
-  -c /path/to/config.conf \
-  -d /path/to/database \
+java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
+  org.tron.program.TransactionHistorySequentialExporter 5489445 -1 \
+  -c ./main_net_config.conf \
+  -d ./output-directory \
   -phase all \
+  -tmp /data1/export-tmp \
+  -bucket-blocks 1000 \
   -fm trigger \
   -kb kafka1:9092,kafka2:9092 \
   -kt tron-trigger-topic \
@@ -162,15 +192,24 @@ java -cp ... org.tron.program.TransactionHistorySequentialExporter 5000000 -1 \
   -keep-temp
 ```
 
-### 从指定起点一直导出到最后一个区块
+### 从 `transactionHistoryStore` 分界点之后直接导到最新块
 
 ```bash
-java -cp ... org.tron.program.TransactionHistorySequentialExporter 8000000 -1 \
-  -c /path/to/config.conf \
-  -d /path/to/database \
+java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
+  org.tron.program.TransactionHistorySequentialExporter 11016445 -1 \
+  -c ./main_net_config.conf \
+  -d ./output-directory \
   -phase all \
+  -tmp /data1/export-tmp-11016445 \
+  -bucket-blocks 10000 \
   -fm trigger
 ```
+
+适用场景：
+
+- 已确认 `11016445` 之后 `transactionHistoryStore` 基本无覆盖
+- 需要依赖 `transactionRetStore` 回退补齐导出数据
+- 当前实现要求导出完整性，若 shard 和 `transactionRetStore` 都无法完整覆盖区块，会直接失败退出
 
 ---
 

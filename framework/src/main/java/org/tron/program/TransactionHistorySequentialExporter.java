@@ -149,8 +149,18 @@ public class TransactionHistorySequentialExporter {
             manifest.getStartBlockNum(), manifest.getEndBlockNum(), startBlockNum, endBlockNum);
       }
 
-      logger.info("Sequential export phase={} range=[{}-{}] bucketBlocks={} tempDir={}",
+      long exportStartBlockNum = Math.max(startBlockNum, manifest.getStartBlockNum());
+      long exportEndBlockNum = Math.min(endBlockNum, manifest.getEndBlockNum());
+      if ((phase == Phase.EXPORT || phase == Phase.ALL) && exportStartBlockNum > exportEndBlockNum) {
+        throw new IllegalArgumentException(String.format(
+            "Requested export range [%d-%d] does not overlap manifest range [%d-%d]",
+            startBlockNum, endBlockNum, manifest.getStartBlockNum(), manifest.getEndBlockNum()));
+      }
+
+      logger.info("Sequential export phase={} manifestRange=[{}-{}] requestedRange=[{}-{}] "
+              + "effectiveExportRange=[{}-{}] bucketBlocks={} tempDir={}",
           phase.name().toLowerCase(), manifest.getStartBlockNum(), manifest.getEndBlockNum(),
+          startBlockNum, endBlockNum, exportStartBlockNum, exportEndBlockNum,
           manifest.getBucketBlockCount(), workingDir.getAbsolutePath());
 
       if (phase == Phase.PREPARE || phase == Phase.ALL) {
@@ -161,7 +171,8 @@ public class TransactionHistorySequentialExporter {
 
       if (phase == Phase.EXPORT || phase == Phase.ALL) {
         ExportStats exportStats = exportBuckets(chainBaseManager, wallet, kafkaSender, processor,
-            stats, manifest, outputFormat, useKafka, kafkaTopic);
+            stats, manifest, exportStartBlockNum, exportEndBlockNum, outputFormat, useKafka,
+            kafkaTopic);
         exportStats.logSummary();
         stats.logFinal();
       }
@@ -225,24 +236,38 @@ public class TransactionHistorySequentialExporter {
 
   private static ExportStats exportBuckets(ChainBaseManager chainBaseManager, Wallet wallet,
       KafkaSender kafkaSender, TransactionProcessor processor, ProcessingStats stats,
-      ExportBucketManifest manifest, String outputFormat, boolean useKafka, String kafkaTopic)
-      throws Exception {
-    logger.info("Export phase started - replay blocks with prepared history shards");
-    stats.initialize(manifest.getStartBlockNum());
+      ExportBucketManifest manifest, long exportStartBlockNum, long exportEndBlockNum,
+      String outputFormat, boolean useKafka, String kafkaTopic) throws Exception {
+    logger.info("Export phase started - replay blocks with prepared history shards "
+            + "for effective range [{}-{}]", exportStartBlockNum, exportEndBlockNum);
+    stats.initialize(exportStartBlockNum);
 
     HistoryShardLoader shardLoader = new HistoryShardLoader();
     ExportStats exportStats = new ExportStats();
     for (ExportBucketManifest.Bucket bucket : manifest.getBuckets()) {
+      if (!bucketOverlapsRange(bucket, exportStartBlockNum, exportEndBlockNum)) {
+        exportStats.recordFilteredBucket();
+        continue;
+      }
+
       if (!bucket.isPrepared()) {
         throw new IllegalStateException(String.format(
             "Unprepared bucket [%d-%d] detected during export. Run prepare first or verify the "
                 + "manifest integrity.", bucket.getStartBlockNum(), bucket.getEndBlockNum()));
       }
 
+      if (bucket.isExported()) {
+        exportStats.recordSkippedExportedBucket();
+        continue;
+      }
+
       BucketExportStats bucketStats = new BucketExportStats(bucket);
-      logger.info("Export bucket start [{}-{}] | shardRecords={} shardBytes={} exported={}",
-          bucket.getStartBlockNum(), bucket.getEndBlockNum(), bucket.getRecordCount(),
-          formatBytes(bucket.getSerializedBytes()), bucket.isExported());
+      long bucketExportStart = Math.max(bucket.getStartBlockNum(), exportStartBlockNum);
+      long bucketExportEnd = Math.min(bucket.getEndBlockNum(), exportEndBlockNum);
+      logger.info("Export bucket start [{}-{}] | effectiveRange=[{}-{}] shardRecords={} "
+              + "shardBytes={} exported={}",
+          bucket.getStartBlockNum(), bucket.getEndBlockNum(), bucketExportStart, bucketExportEnd,
+          bucket.getRecordCount(), formatBytes(bucket.getSerializedBytes()), bucket.isExported());
 
       long loadStartTime = System.currentTimeMillis();
       HistoryShardLoader.BucketShardData shardData =
@@ -252,8 +277,8 @@ public class TransactionHistorySequentialExporter {
           loadDurationMs);
 
       long fetchStartTime = System.currentTimeMillis();
-      List<BlockCapsule> blocks = fetchBlocks(chainBaseManager, bucket.getStartBlockNum(),
-          bucket.getEndBlockNum() - bucket.getStartBlockNum() + 1);
+      List<BlockCapsule> blocks = fetchBlocks(chainBaseManager, bucketExportStart,
+          bucketExportEnd - bucketExportStart + 1);
       long fetchDurationMs = System.currentTimeMillis() - fetchStartTime;
       bucketStats.recordBlockFetch(blocks.size(), fetchDurationMs);
       long processStartTime = System.currentTimeMillis();
@@ -308,6 +333,12 @@ public class TransactionHistorySequentialExporter {
     }
 
     return exportStats;
+  }
+
+  private static boolean bucketOverlapsRange(ExportBucketManifest.Bucket bucket,
+      long exportStartBlockNum, long exportEndBlockNum) {
+    return bucket.getEndBlockNum() >= exportStartBlockNum
+        && bucket.getStartBlockNum() <= exportEndBlockNum;
   }
 
   private static PreparedBlockRet buildPreparedTransactionRet(BlockCapsule block,
@@ -913,7 +944,8 @@ public class TransactionHistorySequentialExporter {
 
   private static final class ExportStats {
     private final long startTimeMillis = System.currentTimeMillis();
-    private int skippedBuckets;
+    private int filteredBuckets;
+    private int skippedExportedBuckets;
     private int processedBuckets;
     private long shardRecords;
     private long shardPayloadBytes;
@@ -932,8 +964,12 @@ public class TransactionHistorySequentialExporter {
     private long missingTransactions;
     private BucketExportStats weakestBucket;
 
-    void recordSkippedBucket() {
-      skippedBuckets++;
+    void recordFilteredBucket() {
+      filteredBuckets++;
+    }
+
+    void recordSkippedExportedBucket() {
+      skippedExportedBuckets++;
     }
 
     void recordBucket(BucketExportStats bucketStats) {
@@ -963,12 +999,14 @@ public class TransactionHistorySequentialExporter {
     }
 
     void logSummary() {
-      logger.info("Export summary | processedBuckets={} skippedBuckets={} blocks={} emptyBlocks={} "
+      logger.info("Export summary | processedBuckets={} filteredBuckets={} "
+              + "skippedExportedBuckets={} blocks={} emptyBlocks={} "
               + "nonEmptyBlocks={} exportedBlocks={} incompleteBlocks={} txs={} exportedTxs={} "
               + "retFallbackBlocks={} retFallbackTxs={} missingTx={} txCoverage={} "
               + "infoCoverage={} shardRecords={} shardBytes={} "
               + "load={}ms fetch={}ms process={}ms elapsed={}s",
-          processedBuckets, skippedBuckets, blocksFetched, emptyBlocks, nonEmptyBlocks,
+          processedBuckets, filteredBuckets, skippedExportedBuckets, blocksFetched,
+          emptyBlocks, nonEmptyBlocks,
           exportedBlocks, incompleteBlocks, totalTransactions, exportedTransactions,
           transactionRetFallbackBlocks, transactionRetFallbackTransactions, missingTransactions,
           percentage(exportedTransactions, totalTransactions),
