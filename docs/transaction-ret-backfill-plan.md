@@ -12,6 +12,9 @@
 
 但在历史数据实际存储为 `LevelDB` 且目标区间缺少可用 `transactionRetStore` 记录时，瓶颈仍然稳定落在 `transactionHistoryStore` 的逐笔随机读上。
 
+> 若目标只是一次性大规模导出，而不是长期修复数据库读取形态，优先参考：
+> `docs/transaction-history-sequential-export-plan.md`
+
 典型日志如下：
 
 ```text
