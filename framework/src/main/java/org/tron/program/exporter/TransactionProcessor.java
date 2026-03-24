@@ -49,8 +49,11 @@ import org.tron.protos.TransactionLogTriggerProtos;
 @Slf4j(topic = "app")
 public class TransactionProcessor implements Closeable {
 
+  private static final int DEFAULT_TRANSACTION_CHUNK_SIZE = 128;
+
   private final ExecutorService blockExecutor;
   private final ExecutorService transactionExecutor;
+  private volatile int transactionChunkSize = DEFAULT_TRANSACTION_CHUNK_SIZE;
 
   /**
    * 构造函数 — 初始化双层线程池。
@@ -106,12 +109,25 @@ public class TransactionProcessor implements Closeable {
       Wallet wallet, ChainBaseManager chainBaseManager,
       KafkaSender kafkaSender,
       org.tron.core.capsule.TransactionRetCapsule prefetchedTransactionRet) {
+    BlockRenderResult renderedBlock = renderTransactionsConcurrently(transactions, blockId,
+        blockNum, timestamp, outputFormat, useKafka, wallet, chainBaseManager,
+        prefetchedTransactionRet);
+    emitRenderedBlock(renderedBlock, kafkaTopic, kafkaSender);
+    return renderedBlock.getProfile();
+  }
+
+  public BlockRenderResult renderTransactionsConcurrently(
+      List<TransactionCapsule> transactions,
+      String blockId, long blockNum, long timestamp,
+      String outputFormat, boolean useKafka,
+      Wallet wallet, ChainBaseManager chainBaseManager,
+      org.tron.core.capsule.TransactionRetCapsule prefetchedTransactionRet) {
     long blockStartTime = System.nanoTime();
     BlockProcessingProfile profile = new BlockProcessingProfile(blockNum, transactions.size());
 
     if (transactions.isEmpty()) {
       profile.addBlockWallNanos(System.nanoTime() - blockStartTime);
-      return profile;
+      return new BlockRenderResult(blockNum, 0, new ArrayList<TransactionOutputRecord>(), profile);
     }
 
     logger.debug("Processing {} transactions concurrently...", transactions.size());
@@ -182,57 +198,219 @@ public class TransactionProcessor implements Closeable {
     // ====================================================================
     // 第二步：并发处理每个交易（使用预取的数据）
     // ====================================================================
-    List<CompletableFuture<Void>> futures = new ArrayList<>();
     AtomicInteger processedCount = new AtomicInteger(0);
     final int txCount = transactions.size();
+    int effectiveChunkSize = Math.max(1, Math.min(transactionChunkSize, txCount));
+    List<TransactionOutputRecord> outputRecords = new ArrayList<>();
 
-    for (int i = 0; i < txCount; i++) {
-      final TransactionCapsule trx = transactions.get(i);
-      final String txId = trx.getTransactionId().toString();
-      final int transactionIndex = i;
-      final TransactionInfo prefetchedTransactionInfo = transactionInfoMap.get(txId);
+    // 等待所有交易处理完成
+    if (txCount <= effectiveChunkSize) {
+      outputRecords.addAll(renderTransactionChunk(transactions, 0, txCount, transactionInfoMap,
+          blockId, blockNum, timestamp, outputFormat, useKafka, wallet, profile,
+          processedCount));
+    } else {
+      List<CompletableFuture<List<TransactionOutputRecord>>> futures = new ArrayList<>();
+      for (int chunkStart = 0; chunkStart < txCount; chunkStart += effectiveChunkSize) {
+        final int fromIndex = chunkStart;
+        final int toIndex = Math.min(chunkStart + effectiveChunkSize, txCount);
+        CompletableFuture<List<TransactionOutputRecord>> future = CompletableFuture.supplyAsync(() ->
+            renderTransactionChunk(transactions, fromIndex, toIndex, transactionInfoMap,
+                blockId, blockNum, timestamp, outputFormat, useKafka, wallet, profile,
+                processedCount), transactionExecutor);
+        futures.add(future);
+      }
+
+      try {
+        long waitStartTime = System.nanoTime();
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get();
+        profile.addFutureWaitNanos(System.nanoTime() - waitStartTime);
+        for (CompletableFuture<List<TransactionOutputRecord>> future : futures) {
+          outputRecords.addAll(future.get());
+        }
+        logger.debug("All {} transactions processed successfully in block {}",
+            transactions.size(), blockNum);
+      } catch (Exception e) {
+        profile.incrementTransactionErrors();
+        logger.error("Error waiting for concurrent transaction processing to complete: {}",
+            e.getMessage(), e);
+      }
+    }
+
+    profile.addBlockWallNanos(System.nanoTime() - blockStartTime);
+    return new BlockRenderResult(blockNum, transactions.size(), outputRecords, profile);
+  }
+
+  public void emitRenderedBlock(BlockRenderResult renderedBlock, String kafkaTopic,
+      KafkaSender kafkaSender) {
+    emitRenderedBlock(renderedBlock, kafkaTopic, kafkaSender, true);
+  }
+
+  public boolean emitRenderedBlock(BlockRenderResult renderedBlock, String kafkaTopic,
+      KafkaSender kafkaSender, boolean verifyAfterEmit) {
+    return emitOutputRecords(renderedBlock.getOutputRecords(), kafkaTopic, kafkaSender,
+        renderedBlock.getProfile(), verifyAfterEmit);
+  }
+
+  private List<TransactionOutputRecord> renderTransactionChunk(List<TransactionCapsule> transactions,
+      int fromIndex,
+      int toIndex, Map<String, TransactionInfo> transactionInfoMap, String blockId, long blockNum,
+      long timestamp, String outputFormat, boolean useKafka, Wallet wallet,
+      BlockProcessingProfile profile, AtomicInteger processedCount) {
+    List<TransactionOutputRecord> outputRecords =
+        new ArrayList<>(Math.max(1, toIndex - fromIndex));
+    for (int i = fromIndex; i < toIndex; i++) {
+      TransactionCapsule trx = transactions.get(i);
+      String txId = trx.getTransactionId().toString();
+      TransactionInfo prefetchedTransactionInfo = transactionInfoMap.get(txId);
       if (prefetchedTransactionInfo != null) {
         profile.incrementPrefetchedTransactionInfoHitCount();
       } else {
         profile.incrementPrefetchedTransactionInfoMissCount();
       }
+      try {
+        outputRecords.addAll(renderTransactionWithPrefetchedInfo(trx, prefetchedTransactionInfo, i,
+            blockId, blockNum, timestamp, outputFormat, useKafka, wallet, profile));
 
-      CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-        try {
-          processTransactionWithPrefetchedInfo(trx, prefetchedTransactionInfo, transactionIndex,
-              blockId, blockNum, timestamp, outputFormat, useKafka, kafkaTopic, wallet,
-              kafkaSender, profile);
-
-          int completed = processedCount.incrementAndGet();
-          if (completed % 50 == 0 || completed == transactions.size()) {
-            logger.debug("Processed {}/{} transactions in block {}",
-                completed, transactions.size(), blockNum);
-          }
-        } catch (Exception e) {
-          profile.incrementTransactionErrors();
-          logger.error("Error processing transaction {} in block {}: {}",
-              transactionIndex + 1, blockNum, e.getMessage(), e);
+        int completed = processedCount.incrementAndGet();
+        if (completed % 50 == 0 || completed == transactions.size()) {
+          logger.debug("Processed {}/{} transactions in block {}",
+              completed, transactions.size(), blockNum);
         }
-      }, transactionExecutor);
+      } catch (Exception e) {
+        profile.incrementTransactionErrors();
+        logger.error("Error processing transaction {} in block {}: {}",
+            i + 1, blockNum, e.getMessage(), e);
+      }
+    }
+    return outputRecords;
+  }
 
-      futures.add(future);
+  private List<TransactionOutputRecord> renderTransactionWithPrefetchedInfo(
+      TransactionCapsule trx, TransactionInfo prefetchedTransactionInfo,
+      int transactionIndex, String blockId, long blockNum, long timestamp,
+      String outputFormat, boolean useKafka, Wallet wallet,
+      BlockProcessingProfile profile) {
+    long transactionStartTime = System.nanoTime();
+
+    String txId = trx.getTransactionId().toString();
+    logger.debug("Rendering transaction #{} (ID: {}) in block {}",
+        transactionIndex + 1, txId, blockNum);
+
+    TransactionInfo transactionInfo = prefetchedTransactionInfo;
+    if (transactionInfo == null) {
+      long txInfoFallbackStartTime = System.nanoTime();
+      ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
+      transactionInfo = wallet.getTransactionInfoById(txIdBytes);
+      profile.recordTransactionInfoFallbackQuery(System.nanoTime() - txInfoFallbackStartTime,
+          transactionInfo != null);
+      logger.debug("Using fallback query for TransactionInfo (prefetch missed): {}", txId);
+    }
+    if (transactionInfo == null) {
+      profile.incrementMissingTransactionInfoCount();
     }
 
-    // 等待所有交易处理完成
+    Transaction transaction = null;
     try {
-      long waitStartTime = System.nanoTime();
-      CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get();
-      profile.addFutureWaitNanos(System.nanoTime() - waitStartTime);
-      logger.debug("All {} transactions processed successfully in block {}",
-          transactions.size(), blockNum);
+      long transactionCapsuleReadStartTime = System.nanoTime();
+      transaction = trx.getInstance();
+      profile.addTransactionCapsuleReadNanos(System.nanoTime() - transactionCapsuleReadStartTime);
+      logger.debug("Retrieved transaction directly from TransactionCapsule for ID: {}", txId);
     } catch (Exception e) {
-      profile.incrementTransactionErrors();
-      logger.error("Error waiting for concurrent transaction processing to complete: {}",
-          e.getMessage(), e);
+      logger.warn("Could not get transaction from TransactionCapsule for ID {}: {}",
+          txId, e.getMessage());
+      long transactionFallbackStartTime = System.nanoTime();
+      ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
+      transaction = wallet.getTransactionById(txIdBytes);
+      profile.recordTransactionFallbackQuery(System.nanoTime() - transactionFallbackStartTime,
+          transaction != null);
+    }
+    if (transaction == null) {
+      profile.incrementMissingTransactionCount();
     }
 
-    profile.addBlockWallNanos(System.nanoTime() - blockStartTime);
-    return profile;
+    List<TransactionOutputRecord> outputRecords = renderTransactionData(transactionInfo, transaction,
+        trx, transactionIndex, blockId, blockNum, timestamp, outputFormat, useKafka, profile);
+    if (hasExpectedTransactionOutput(outputRecords, useKafka)) {
+      profile.incrementSuccessfulOutputTransactionCount();
+    } else {
+      profile.incrementTransactionErrors();
+      logger.error("No valid output produced for transaction {} in block {}. format={} "
+              + "useKafka={} outputRecords={} invalidTxIdSkips={} serializationNulls={}",
+          txId, blockNum, outputFormat, useKafka, outputRecords.size(),
+          profile.getInvalidTransactionIdSkipCount(), profile.getSerializationNullCount());
+    }
+    profile.addTransactionWallNanos(System.nanoTime() - transactionStartTime);
+    return outputRecords;
+  }
+
+  private boolean emitOutputRecords(List<TransactionOutputRecord> outputRecords, String kafkaTopic,
+      KafkaSender kafkaSender, BlockProcessingProfile profile, boolean verifyAfterEmit) {
+    long emitStartTime = System.nanoTime();
+    List<String> stdoutLines = new ArrayList<>();
+    boolean kafkaOutputPresent = false;
+
+    for (TransactionOutputRecord outputRecord : outputRecords) {
+      switch (outputRecord.getType()) {
+        case KAFKA_STRING:
+          if (kafkaSender == null || kafkaTopic == null || !kafkaSender.hasStringProducer()) {
+            throw new IllegalStateException("Kafka string producer is not available");
+          }
+          kafkaSender.send(kafkaTopic, outputRecord.getKey(), outputRecord.getTextPayload());
+          profile.incrementKafkaStringSendCount();
+          kafkaOutputPresent = true;
+          break;
+        case KAFKA_BYTES:
+          if (kafkaSender == null || kafkaTopic == null || !kafkaSender.hasBytesProducer()) {
+            throw new IllegalStateException("Kafka bytes producer is not available");
+          }
+          kafkaSender.sendBytes(kafkaTopic, outputRecord.getKey(), outputRecord.getBinaryPayload());
+          profile.incrementKafkaBytesSendCount();
+          kafkaOutputPresent = true;
+          break;
+        case STDOUT:
+          stdoutLines.add(outputRecord.getTextPayload());
+          break;
+        default:
+          throw new IllegalStateException("Unsupported output type: " + outputRecord.getType());
+      }
+    }
+
+    if (!stdoutLines.isEmpty()) {
+      synchronized (System.out) {
+        for (String stdoutLine : stdoutLines) {
+          System.out.println(stdoutLine);
+          profile.incrementStdoutOutputCount();
+        }
+      }
+    }
+
+    if (verifyAfterEmit && kafkaOutputPresent && kafkaSender != null) {
+      kafkaSender.flushAndVerify();
+    }
+
+    long emitDuration = System.nanoTime() - emitStartTime;
+    profile.addOutputNanos(emitDuration);
+    profile.addBlockWallNanos(emitDuration);
+    return kafkaOutputPresent;
+  }
+
+  private boolean hasExpectedTransactionOutput(List<TransactionOutputRecord> outputRecords,
+      boolean useKafka) {
+    if (outputRecords == null || outputRecords.isEmpty()) {
+      return false;
+    }
+
+    if (!useKafka) {
+      return true;
+    }
+
+    for (TransactionOutputRecord outputRecord : outputRecords) {
+      if (outputRecord.getType() == OutputType.KAFKA_STRING
+          || outputRecord.getType() == OutputType.KAFKA_BYTES) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -250,56 +428,16 @@ public class TransactionProcessor implements Closeable {
       int transactionIndex, String blockId, long blockNum, long timestamp,
       String outputFormat, boolean useKafka, String kafkaTopic, Wallet wallet,
       KafkaSender kafkaSender, BlockProcessingProfile profile) {
-    long transactionStartTime = System.nanoTime();
-
-    String txId = trx.getTransactionId().toString();
-    logger.debug("Processing transaction #{} (ID: {}) in block {}",
-        transactionIndex + 1, txId, blockNum);
-
-    // 第一步：获取 TransactionInfo — 优先使用预取数据（零 I/O）
-    TransactionInfo transactionInfo = prefetchedTransactionInfo;
-    if (transactionInfo == null) {
-      long txInfoFallbackStartTime = System.nanoTime();
-      ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
-      transactionInfo = wallet.getTransactionInfoById(txIdBytes);
-      profile.recordTransactionInfoFallbackQuery(System.nanoTime() - txInfoFallbackStartTime,
-          transactionInfo != null);
-      logger.debug("Using fallback query for TransactionInfo (prefetch missed): {}", txId);
-    }
-    if (transactionInfo == null) {
-      profile.incrementMissingTransactionInfoCount();
-    }
-
-    // 第二步：获取 Transaction — 直接从 TransactionCapsule 获取（零 I/O）
-    Transaction transaction = null;
-    try {
-      long transactionCapsuleReadStartTime = System.nanoTime();
-      transaction = trx.getInstance();
-      profile.addTransactionCapsuleReadNanos(System.nanoTime() - transactionCapsuleReadStartTime);
-      logger.debug("Retrieved transaction directly from TransactionCapsule for ID: {}", txId);
-    } catch (Exception e) {
-      logger.warn("Could not get transaction from TransactionCapsule for ID {}: {}",
-          txId, e.getMessage());
-      // 降级处理：仅在 TransactionCapsule 失败时才查询数据库
-      long transactionFallbackStartTime = System.nanoTime();
-      ByteString txIdBytes = ByteString.copyFrom(ByteArray.fromHexString(txId));
-      transaction = wallet.getTransactionById(txIdBytes);
-      profile.recordTransactionFallbackQuery(System.nanoTime() - transactionFallbackStartTime,
-          transaction != null);
-    }
-    if (transaction == null) {
-      profile.incrementMissingTransactionCount();
-    }
-
-    // 第三步：处理交易数据
-    processTransactionData(transactionInfo, transaction, trx, transactionIndex,
-        blockId, blockNum, timestamp, outputFormat, useKafka, kafkaTopic, kafkaSender, profile);
-    profile.addTransactionWallNanos(System.nanoTime() - transactionStartTime);
+    List<TransactionOutputRecord> outputRecords = renderTransactionWithPrefetchedInfo(trx,
+        prefetchedTransactionInfo, transactionIndex, blockId, blockNum, timestamp, outputFormat,
+        useKafka, wallet, profile);
+    emitOutputRecords(outputRecords, kafkaTopic, kafkaSender, profile, true);
   }
 
   /**
    * 遗留方法 — 不使用预取，自动降级为单个查询。
    */
+  @Deprecated
   public void processTransaction(
       TransactionCapsule trx, int transactionIndex,
       String blockId, long blockNum, long timestamp,
@@ -331,11 +469,21 @@ public class TransactionProcessor implements Closeable {
       String blockId, long blockNum, long timestamp,
       String outputFormat, boolean useKafka, String kafkaTopic,
       KafkaSender kafkaSender, BlockProcessingProfile profile) {
+    List<TransactionOutputRecord> outputRecords = renderTransactionData(transactionInfo,
+        transaction, trx, transactionIndex, blockId, blockNum, timestamp, outputFormat,
+        useKafka, profile);
+    emitOutputRecords(outputRecords, kafkaTopic, kafkaSender, profile, true);
+  }
 
+  private List<TransactionOutputRecord> renderTransactionData(
+      TransactionInfo transactionInfo, Transaction transaction,
+      TransactionCapsule trx, int transactionIndex,
+      String blockId, long blockNum, long timestamp,
+      String outputFormat, boolean useKafka, BlockProcessingProfile profile) {
+    List<TransactionOutputRecord> outputRecords = new ArrayList<>(2);
     String txId = trx.getTransactionId().toString();
 
     if ("trigger".equals(outputFormat) || "trigger-proto".equals(outputFormat)) {
-      String kafkaTopicToUse = useKafka ? kafkaTopic : null;
       String kafkaKey = txId;
 
       if (transactionInfo == null && transaction == null) {
@@ -359,24 +507,19 @@ public class TransactionProcessor implements Closeable {
           profile.addSerializationNanos(System.nanoTime() - serializeStartTime);
           profile.incrementTriggerProtoCount();
 
-          long emitStartTime = System.nanoTime();
-          if (kafkaTopicToUse != null && kafkaSender != null
-              && kafkaSender.hasBytesProducer()) {
+          if (useKafka) {
             String key = kafkaKey != null ? kafkaKey : trigger.getTransactionId();
             if (isValidTransactionId(trigger.getTransactionId())) {
-              kafkaSender.sendBytes(kafkaTopicToUse, key, payload);
-              profile.incrementKafkaBytesSendCount();
+              outputRecords.add(TransactionOutputRecord.kafkaBytes(key, payload));
             } else {
               profile.incrementInvalidTransactionIdSkipCount();
               logger.warn("Skipped Kafka proto send due to invalid transaction ID: {}",
                   trigger.getTransactionId());
             }
           } else {
-            // 没有 Kafka 时输出 base64 到控制台
-            System.out.println(Base64.getEncoder().encodeToString(payload));
-            profile.incrementStdoutOutputCount();
+            outputRecords.add(TransactionOutputRecord.stdout(
+                Base64.getEncoder().encodeToString(payload)));
           }
-          profile.addOutputNanos(System.nanoTime() - emitStartTime);
         } catch (Exception e) {
           profile.incrementTransactionErrors();
           logger.error("Error creating protobuf TransactionLogTrigger: " + e.getMessage(), e);
@@ -396,29 +539,19 @@ public class TransactionProcessor implements Closeable {
           profile.incrementTriggerJsonCount();
 
           if (jsonOutput != null) {
-            boolean sentToKafka = false;
-            long emitStartTime = System.nanoTime();
-
-            if (kafkaTopicToUse != null && kafkaSender != null
-                && kafkaSender.hasStringProducer()) {
+            if (useKafka) {
               String key = kafkaKey != null ? kafkaKey : trigger.getTransactionId();
               if (isValidTransactionId(trigger.getTransactionId())) {
-                kafkaSender.send(kafkaTopicToUse, key, jsonOutput);
-                profile.incrementKafkaStringSendCount();
-                sentToKafka = true;
+                outputRecords.add(TransactionOutputRecord.kafkaString(key, jsonOutput));
               } else {
                 profile.incrementInvalidTransactionIdSkipCount();
                 logger.warn("Skipped Kafka send due to invalid transaction ID: {}",
                     trigger.getTransactionId());
+                outputRecords.add(TransactionOutputRecord.stdout(jsonOutput));
               }
+            } else {
+              outputRecords.add(TransactionOutputRecord.stdout(jsonOutput));
             }
-
-            // 未发送到 Kafka 时输出到控制台
-            if (!sentToKafka) {
-              System.out.println(jsonOutput);
-              profile.incrementStdoutOutputCount();
-            }
-            profile.addOutputNanos(System.nanoTime() - emitStartTime);
           } else {
             profile.incrementSerializationNullCount();
             logger.error("Failed to serialize TransactionLogTrigger to JSON for transaction");
@@ -430,36 +563,35 @@ public class TransactionProcessor implements Closeable {
       }
     } else {
       // ---- 传统格式（json / protobuf / both）----
-      long emitStartTime = System.nanoTime();
-      synchronized (System.out) {
-        if (transactionInfo != null) {
-          List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
-          TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
-              .clearLog()
-              .addAllLog(newLogList)
-              .build();
+      if (transactionInfo != null) {
+        List<Log> newLogList = Util.convertLogAddressToTronAddress(transactionInfo);
+        TransactionInfo transactionInfoWithConvertedLogs = transactionInfo.toBuilder()
+            .clearLog()
+            .addAllLog(newLogList)
+            .build();
 
-          if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println(
-                JsonFormat.printToString(transactionInfoWithConvertedLogs, true));
-          }
-          if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println(transactionInfoWithConvertedLogs.toString());
-          }
+        if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
+          outputRecords.add(TransactionOutputRecord.stdout(
+              JsonFormat.printToString(transactionInfoWithConvertedLogs, true)));
         }
-
-        if (transaction != null) {
-          if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println(JsonFormat.printToString(transaction, true));
-          }
-          if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
-            System.out.println(transaction.toString());
-          }
+        if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
+          outputRecords.add(TransactionOutputRecord.stdout(
+              transactionInfoWithConvertedLogs.toString()));
         }
       }
-      profile.addOutputNanos(System.nanoTime() - emitStartTime);
+
+      if (transaction != null) {
+        if ("json".equals(outputFormat) || "both".equals(outputFormat)) {
+          outputRecords.add(TransactionOutputRecord.stdout(
+              JsonFormat.printToString(transaction, true)));
+        }
+        if ("protobuf".equals(outputFormat) || "both".equals(outputFormat)) {
+          outputRecords.add(TransactionOutputRecord.stdout(transaction.toString()));
+        }
+      }
       profile.incrementLegacyOutputCount();
     }
+    return outputRecords;
   }
 
   // ========================================================================
@@ -481,6 +613,86 @@ public class TransactionProcessor implements Closeable {
         && !"N/A".equals(txId)
         && !txId.isEmpty()
         && !txId.startsWith("UNKNOWN_TX_");
+  }
+
+  public static final class BlockRenderResult {
+    private final long blockNum;
+    private final int transactionCount;
+    private final List<TransactionOutputRecord> outputRecords;
+    private final BlockProcessingProfile profile;
+
+    private BlockRenderResult(long blockNum, int transactionCount,
+        List<TransactionOutputRecord> outputRecords, BlockProcessingProfile profile) {
+      this.blockNum = blockNum;
+      this.transactionCount = transactionCount;
+      this.outputRecords = outputRecords;
+      this.profile = profile;
+    }
+
+    public long getBlockNum() {
+      return blockNum;
+    }
+
+    public int getTransactionCount() {
+      return transactionCount;
+    }
+
+    List<TransactionOutputRecord> getOutputRecords() {
+      return outputRecords;
+    }
+
+    public BlockProcessingProfile getProfile() {
+      return profile;
+    }
+  }
+
+  private static final class TransactionOutputRecord {
+    private final OutputType type;
+    private final String key;
+    private final String textPayload;
+    private final byte[] binaryPayload;
+
+    private TransactionOutputRecord(OutputType type, String key, String textPayload,
+        byte[] binaryPayload) {
+      this.type = type;
+      this.key = key;
+      this.textPayload = textPayload;
+      this.binaryPayload = binaryPayload;
+    }
+
+    static TransactionOutputRecord kafkaString(String key, String textPayload) {
+      return new TransactionOutputRecord(OutputType.KAFKA_STRING, key, textPayload, null);
+    }
+
+    static TransactionOutputRecord kafkaBytes(String key, byte[] binaryPayload) {
+      return new TransactionOutputRecord(OutputType.KAFKA_BYTES, key, null, binaryPayload);
+    }
+
+    static TransactionOutputRecord stdout(String textPayload) {
+      return new TransactionOutputRecord(OutputType.STDOUT, null, textPayload, null);
+    }
+
+    OutputType getType() {
+      return type;
+    }
+
+    String getKey() {
+      return key;
+    }
+
+    String getTextPayload() {
+      return textPayload;
+    }
+
+    byte[] getBinaryPayload() {
+      return binaryPayload;
+    }
+  }
+
+  private enum OutputType {
+    KAFKA_STRING,
+    KAFKA_BYTES,
+    STDOUT
   }
 
   public static final class BlockProcessingProfile {
@@ -522,6 +734,7 @@ public class TransactionProcessor implements Closeable {
     private final AtomicInteger stdoutOutputCount = new AtomicInteger();
     private final AtomicInteger invalidTransactionIdSkipCount = new AtomicInteger();
     private final AtomicInteger serializationNullCount = new AtomicInteger();
+    private final AtomicInteger successfulOutputTransactionCount = new AtomicInteger();
 
     public BlockProcessingProfile(long blockNum, int transactionCount) {
       this.blockNum = blockNum;
@@ -796,6 +1009,14 @@ public class TransactionProcessor implements Closeable {
 
     public int getSerializationNullCount() {
       return serializationNullCount.get();
+    }
+
+    public void incrementSuccessfulOutputTransactionCount() {
+      successfulOutputTransactionCount.incrementAndGet();
+    }
+
+    public int getSuccessfulOutputTransactionCount() {
+      return successfulOutputTransactionCount.get();
     }
   }
 

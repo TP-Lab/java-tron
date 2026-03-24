@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.tron.common.application.TronApplicationContext;
@@ -100,10 +101,14 @@ public class TransactionHistorySequentialExporter {
     }
 
     boolean useKafka = kafkaBrokers != null && kafkaTopic != null;
+    int blockConcurrency = Math.max(8, customThreadPoolSize / 2);
     KafkaSender kafkaSender = new KafkaSender();
     TransactionProcessor processor = new TransactionProcessor(customThreadPoolSize);
     ProcessingStats stats = new ProcessingStats();
     TronApplicationContext context = null;
+    File workingDir = null;
+    ExportBucketManifest manifest = null;
+    boolean completedSuccessfully = false;
 
     try {
       if (useKafka) {
@@ -137,9 +142,9 @@ public class TransactionHistorySequentialExporter {
         return;
       }
 
-      File workingDir = resolveWorkingDir(customTempDir, Args.getInstance().getOutputDirectory(),
+      workingDir = resolveWorkingDir(customTempDir, Args.getInstance().getOutputDirectory(),
           startBlockNum, endBlockNum);
-      ExportBucketManifest manifest = phase == Phase.EXPORT
+      manifest = phase == Phase.EXPORT
           ? ExportBucketManifest.load(workingDir)
           : ExportBucketManifest.create(workingDir, startBlockNum, endBlockNum, bucketBlockCount);
 
@@ -161,7 +166,8 @@ public class TransactionHistorySequentialExporter {
               + "effectiveExportRange=[{}-{}] bucketBlocks={} tempDir={}",
           phase.name().toLowerCase(), manifest.getStartBlockNum(), manifest.getEndBlockNum(),
           startBlockNum, endBlockNum, exportStartBlockNum, exportEndBlockNum,
-          manifest.getBucketBlockCount(), workingDir.getAbsolutePath());
+          manifest.getBucketBlockCount(),
+          workingDir.getAbsolutePath());
 
       if (phase == Phase.PREPARE || phase == Phase.ALL) {
         PrepareStats prepareStats =
@@ -172,15 +178,12 @@ public class TransactionHistorySequentialExporter {
       if (phase == Phase.EXPORT || phase == Phase.ALL) {
         ExportStats exportStats = exportBuckets(chainBaseManager, wallet, kafkaSender, processor,
             stats, manifest, exportStartBlockNum, exportEndBlockNum, outputFormat, useKafka,
-            kafkaTopic);
+            kafkaTopic, blockConcurrency);
         exportStats.logSummary();
         stats.logFinal();
       }
 
-      if (!keepTemp) {
-        logger.info("Temporary shard files retained at {}. Delete manually after verification.",
-            workingDir.getAbsolutePath());
-      }
+      completedSuccessfully = true;
     } catch (Exception e) {
       logger.error("TransactionHistorySequentialExporter failed: {}", e.getMessage(), e);
       throw new RuntimeException("TransactionHistorySequentialExporter failed", e);
@@ -189,6 +192,13 @@ public class TransactionHistorySequentialExporter {
       kafkaSender.close();
       if (context != null) {
         context.close();
+      }
+      boolean manifestClosed = closeManifest(manifest);
+      if (completedSuccessfully && workingDir != null && manifestClosed) {
+        finalizeWorkingDir(phase, keepTemp, workingDir, manifest);
+      } else if (completedSuccessfully && workingDir != null) {
+        logger.warn("Retaining temporary shard files at {} because manifest finalization failed.",
+            workingDir.getAbsolutePath());
       }
     }
   }
@@ -237,7 +247,8 @@ public class TransactionHistorySequentialExporter {
   private static ExportStats exportBuckets(ChainBaseManager chainBaseManager, Wallet wallet,
       KafkaSender kafkaSender, TransactionProcessor processor, ProcessingStats stats,
       ExportBucketManifest manifest, long exportStartBlockNum, long exportEndBlockNum,
-      String outputFormat, boolean useKafka, String kafkaTopic) throws Exception {
+      String outputFormat, boolean useKafka, String kafkaTopic, int blockConcurrency)
+      throws Exception {
     logger.info("Export phase started - replay blocks with prepared history shards "
             + "for effective range [{}-{}]", exportStartBlockNum, exportEndBlockNum);
     stats.initialize(exportStartBlockNum);
@@ -256,18 +267,42 @@ public class TransactionHistorySequentialExporter {
                 + "manifest integrity.", bucket.getStartBlockNum(), bucket.getEndBlockNum()));
       }
 
+      if (!manifest.supportsPrefixCheckpointResume() && bucket.hasPartialCheckpoint()) {
+        throw new IllegalStateException(String.format(
+            "Legacy manifest in %s contains partial checkpoint state for bucket [%d-%d] "
+                + "(nextExportBlock=%d). Re-run prepare with a new -tmp directory before export.",
+            manifest.getWorkingDir().getAbsolutePath(), bucket.getStartBlockNum(),
+            bucket.getEndBlockNum(), bucket.getNextExportBlockNum()));
+      }
+
       if (bucket.isExported()) {
         exportStats.recordSkippedExportedBucket();
         continue;
       }
 
       BucketExportStats bucketStats = new BucketExportStats(bucket);
-      long bucketExportStart = Math.max(bucket.getStartBlockNum(), exportStartBlockNum);
-      long bucketExportEnd = Math.min(bucket.getEndBlockNum(), exportEndBlockNum);
+      long requestedBucketStart = Math.max(bucket.getStartBlockNum(), exportStartBlockNum);
+      long requestedBucketEnd = Math.min(bucket.getEndBlockNum(), exportEndBlockNum);
+      long nextExportBlockNum = bucket.getNextExportBlockNum();
+      if (requestedBucketEnd >= nextExportBlockNum && requestedBucketStart > nextExportBlockNum) {
+        throw new IllegalStateException(String.format(
+            "Requested export range [%d-%d] skips unexported blocks in bucket [%d-%d]. "
+                + "nextExportBlock=%d. Re-run from %d or use a separate -tmp directory.",
+            requestedBucketStart, requestedBucketEnd, bucket.getStartBlockNum(),
+            bucket.getEndBlockNum(), nextExportBlockNum, nextExportBlockNum));
+      }
+
+      long bucketExportStart = Math.max(requestedBucketStart, nextExportBlockNum);
+      long bucketExportEnd = requestedBucketEnd;
+      if (bucketExportStart > bucketExportEnd) {
+        exportStats.recordSkippedExportedBucket();
+        continue;
+      }
       logger.info("Export bucket start [{}-{}] | effectiveRange=[{}-{}] shardRecords={} "
-              + "shardBytes={} exported={}",
+              + "shardBytes={} exported={} nextExportBlock={}",
           bucket.getStartBlockNum(), bucket.getEndBlockNum(), bucketExportStart, bucketExportEnd,
-          bucket.getRecordCount(), formatBytes(bucket.getSerializedBytes()), bucket.isExported());
+          bucket.getRecordCount(), formatBytes(bucket.getSerializedBytes()), bucket.isExported(),
+          bucket.getNextExportBlockNum());
 
       long loadStartTime = System.currentTimeMillis();
       HistoryShardLoader.BucketShardData shardData =
@@ -283,39 +318,95 @@ public class TransactionHistorySequentialExporter {
       bucketStats.recordBlockFetch(blocks.size(), fetchDurationMs);
       long processStartTime = System.currentTimeMillis();
 
-      for (BlockCapsule block : blocks) {
-        List<TransactionCapsule> transactions = block.getTransactions();
-        bucketStats.recordBlockScanned(transactions.size());
-        if (transactions.isEmpty()) {
-          stats.update(1, 0, block.getNum());
-          continue;
+      int effectiveBlockConcurrency = Math.max(1, blockConcurrency);
+      for (int windowStart = 0; windowStart < blocks.size(); windowStart += effectiveBlockConcurrency) {
+        int windowEnd = Math.min(windowStart + effectiveBlockConcurrency, blocks.size());
+        List<CompletableFuture<BlockExportResult>> futures = new ArrayList<>(windowEnd - windowStart);
+
+        for (int i = windowStart; i < windowEnd; i++) {
+          final BlockCapsule block = blocks.get(i);
+          futures.add(CompletableFuture.supplyAsync(() -> processExportBlock(block,
+              shardData.getBlockInfos(block.getNum()), chainBaseManager, wallet, processor,
+              outputFormat, useKafka), processor.getBlockExecutor()));
         }
 
-        PreparedBlockRet preparedBlockRet = resolveExportTransactionRet(block,
-            shardData.getBlockInfos(block.getNum()), chainBaseManager, bucketStats);
-        if (!preparedBlockRet.isComplete()) {
-          bucketStats.recordIncompleteBlock(block.getNum(), transactions.size(),
-              preparedBlockRet.getMissingTransactionCount());
-          throw new IllegalStateException(String.format(
-              "Incomplete export data for block %d: missingTx=%d txCount=%d. "
-                  + "Neither prepared shard nor transactionRetStore can fully cover this block.",
-              block.getNum(), preparedBlockRet.getMissingTransactionCount(), transactions.size()));
+        List<BlockExportResult> windowResults = new ArrayList<>(windowEnd - windowStart);
+        for (CompletableFuture<BlockExportResult> future : futures) {
+          try {
+            windowResults.add(future.get());
+          } catch (Exception e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            logger.error("Export bucket render failure [{}-{}] | effectiveRange=[{}-{}] "
+                    + "nextExportBlock={} error={}",
+                bucket.getStartBlockNum(), bucket.getEndBlockNum(), bucketExportStart,
+                bucketExportEnd, bucket.getNextExportBlockNum(), cause.getMessage(), cause);
+            throw new IllegalStateException(String.format(
+                "Render failed within bucket [%d-%d] at nextExportBlock=%d",
+                bucket.getStartBlockNum(), bucket.getEndBlockNum(),
+                bucket.getNextExportBlockNum()), cause);
+          }
         }
 
-        processor.processTransactionsConcurrently(transactions, block.getBlockId().toString(),
-            block.getNum(), block.getTimeStamp(), outputFormat, useKafka, kafkaTopic, wallet,
-            chainBaseManager, kafkaSender, preparedBlockRet.getTransactionRetCapsule());
-        bucketStats.recordExportedBlock(transactions.size());
-        stats.update(1, transactions.size(), block.getNum());
+        for (BlockExportResult result : windowResults) {
+          if (result.isIncompleteBlock()) {
+            bucketStats.recordBlockResult(result);
+            logger.error("Export bucket failure [{}-{}] | block={} txCount={} missingTx={} "
+                    + "incompleteBlocks={} missingTxTotal={} worstIncompleteBlock={}({} tx, "
+                    + "missing={}) nextExportBlock={}",
+                bucket.getStartBlockNum(), bucket.getEndBlockNum(),
+                result.getBlockNum(), result.getTransactionCount(),
+                result.getMissingTransactions(), bucketStats.getIncompleteBlocks(),
+                bucketStats.getMissingTransactions(), bucketStats.getWorstIncompleteBlockNum(),
+                bucketStats.getWorstIncompleteBlockTxCount(),
+                bucketStats.getWorstIncompleteMissingTx(), bucket.getNextExportBlockNum());
+            throw new IllegalStateException(String.format(
+                "Incomplete export data for block %d: missingTx=%d txCount=%d. "
+                    + "Neither prepared shard nor transactionRetStore can fully cover this block.",
+                result.getBlockNum(), result.getMissingTransactions(),
+                result.getTransactionCount()));
+          }
+        }
+
+        try {
+          boolean windowHasKafkaOutput = false;
+          for (BlockExportResult result : windowResults) {
+            if (result.hasRenderedBlock()) {
+              windowHasKafkaOutput |= processor.emitRenderedBlock(result.getRenderedBlock(),
+                  kafkaTopic, kafkaSender, false);
+            }
+          }
+
+          if (windowHasKafkaOutput && useKafka) {
+            long flushStartTime = System.nanoTime();
+            kafkaSender.flushAndVerify();
+            bucketStats.recordWindowKafkaFlush(System.nanoTime() - flushStartTime);
+          }
+        } catch (Exception e) {
+          logger.error("Export bucket emit failure [{}-{}] | effectiveRange=[{}-{}] "
+                  + "nextExportBlock={} error={}",
+              bucket.getStartBlockNum(), bucket.getEndBlockNum(), bucketExportStart,
+              bucketExportEnd, bucket.getNextExportBlockNum(), e.getMessage(), e);
+          throw e;
+        }
+
+        for (BlockExportResult result : windowResults) {
+          bucketStats.recordBlockResult(result);
+          stats.update(1, result.getExportedTransactions(), result.getBlockNum());
+        }
+
+        long lastSuccessfulBlockNum = windowResults.get(windowResults.size() - 1).getBlockNum();
+        bucket.markBlockExported(lastSuccessfulBlockNum);
+        manifest.appendCheckpoint(bucket);
       }
 
       bucketStats.recordProcessTime(System.currentTimeMillis() - processStartTime);
-      bucket.markExported();
-      manifest.save();
       logger.info("Export bucket [{}-{}] | blocks={} txs={} shardRecords={} shardBytes={} "
               + "load={}ms fetch={}ms process={}ms emptyBlocks={} nonEmptyBlocks={} "
               + "exportedBlocks={} incompleteBlocks={} retFallbackBlocks={} retFallbackTxs={} "
               + "txCoverage={} infoCoverage={} missingTx={} "
+              + "processDetail: index={}ms wait={}ms blockWall={}ms txWall={}ms trigger={}ms "
+              + "serialize={}ms emit={}ms kafkaStr={} kafkaBytes={} prefetchHit={} "
+              + "prefetchMiss={} txErrors={} slowestBlock={}({} tx, {}ms) "
               + "worstIncompleteBlock={}({} tx, missing={})",
           bucket.getStartBlockNum(), bucket.getEndBlockNum(), bucketStats.getBlocksFetched(),
           bucketStats.getTotalTransactions(), bucketStats.getShardRecordCount(),
@@ -327,7 +418,22 @@ public class TransactionHistorySequentialExporter {
           bucketStats.getTransactionRetFallbackTransactions(),
           percentage(bucketStats.getExportedTransactions(), bucketStats.getTotalTransactions()),
           percentage(bucketStats.getShardRecordCount(), bucketStats.getTotalTransactions()),
-          bucketStats.getMissingTransactions(), bucketStats.getWorstIncompleteBlockNum(),
+          bucketStats.getMissingTransactions(),
+          nanosToMillis(bucketStats.getIndexBuildNanos()),
+          nanosToMillis(bucketStats.getFutureWaitNanos()),
+          nanosToMillis(bucketStats.getBlockWallNanos()),
+          nanosToMillis(bucketStats.getTransactionWallNanos()),
+          nanosToMillis(bucketStats.getTriggerBuildNanos()),
+          nanosToMillis(bucketStats.getSerializationNanos()),
+          nanosToMillis(bucketStats.getOutputNanos()),
+          bucketStats.getKafkaStringSendCount(),
+          bucketStats.getKafkaBytesSendCount(),
+          bucketStats.getPrefetchedTransactionInfoHitCount(),
+          bucketStats.getPrefetchedTransactionInfoMissCount(),
+          bucketStats.getTransactionErrorCount(),
+          bucketStats.getSlowestBlockNum(), bucketStats.getSlowestBlockTxCount(),
+          nanosToMillis(bucketStats.getSlowestBlockWallNanos()),
+          bucketStats.getWorstIncompleteBlockNum(),
           bucketStats.getWorstIncompleteBlockTxCount(), bucketStats.getWorstIncompleteMissingTx());
       exportStats.recordBucket(bucketStats);
     }
@@ -364,26 +470,6 @@ public class TransactionHistorySequentialExporter {
     TransactionRetCapsule transactionRetCapsule = new TransactionRetCapsule(block);
     transactionRetCapsule.addAllTransactionInfos(orderedInfos);
     return PreparedBlockRet.complete(transactionRetCapsule);
-  }
-
-  private static PreparedBlockRet resolveExportTransactionRet(BlockCapsule block,
-      Map<WrappedByteArray, TransactionInfo> blockInfos, ChainBaseManager chainBaseManager,
-      BucketExportStats bucketStats) {
-    PreparedBlockRet preparedBlockRet = buildPreparedTransactionRet(block, blockInfos);
-    if (preparedBlockRet.isComplete()) {
-      return preparedBlockRet;
-    }
-
-    TransactionRetCapsule fallbackRet = readTransactionRetFallback(block, chainBaseManager);
-    if (fallbackRet == null) {
-      return preparedBlockRet;
-    }
-
-    bucketStats.recordTransactionRetFallbackBlock(block.getTransactions().size());
-    logger.debug("Use transactionRetStore fallback for block={} missingPreparedTx={} txCount={}",
-        block.getNum(), preparedBlockRet.getMissingTransactionCount(),
-        block.getTransactions().size());
-    return PreparedBlockRet.complete(fallbackRet);
   }
 
   private static TransactionRetCapsule readTransactionRetFallback(BlockCapsule block,
@@ -424,6 +510,49 @@ public class TransactionHistorySequentialExporter {
     }
 
     return transactionRetCapsule;
+  }
+
+  private static BlockExportResult processExportBlock(BlockCapsule block,
+      Map<WrappedByteArray, TransactionInfo> blockInfos, ChainBaseManager chainBaseManager,
+      Wallet wallet, TransactionProcessor processor, String outputFormat,
+      boolean useKafka) {
+    List<TransactionCapsule> transactions = block.getTransactions();
+    if (transactions.isEmpty()) {
+      return BlockExportResult.empty(block.getNum());
+    }
+
+    PreparedBlockRet preparedBlockRet = buildPreparedTransactionRet(block, blockInfos);
+    boolean transactionRetFallbackUsed = false;
+    if (!preparedBlockRet.isComplete()) {
+      int missingPreparedTransactions = preparedBlockRet.getMissingTransactionCount();
+      TransactionRetCapsule fallbackRet = readTransactionRetFallback(block, chainBaseManager);
+      if (fallbackRet != null) {
+        preparedBlockRet = PreparedBlockRet.complete(fallbackRet);
+        transactionRetFallbackUsed = true;
+        logger.debug("Use transactionRetStore fallback for block={} missingPreparedTx={} txCount={}",
+            block.getNum(), missingPreparedTransactions,
+            block.getTransactions().size());
+      }
+    }
+
+    if (!preparedBlockRet.isComplete()) {
+      return BlockExportResult.incomplete(block.getNum(), transactions.size(),
+          preparedBlockRet.getMissingTransactionCount());
+    }
+
+    TransactionProcessor.BlockRenderResult renderedBlock =
+        processor.renderTransactionsConcurrently(transactions, block.getBlockId().toString(),
+            block.getNum(), block.getTimeStamp(), outputFormat, useKafka, wallet,
+            chainBaseManager, preparedBlockRet.getTransactionRetCapsule());
+    if (renderedBlock.getProfile().getTransactionErrorCount() > 0) {
+      throw new IllegalStateException(String.format(
+          "Render failed for block %d: txErrors=%d txCount=%d",
+          block.getNum(), renderedBlock.getProfile().getTransactionErrorCount(),
+          transactions.size()));
+    }
+
+    return BlockExportResult.rendered(block.getNum(), transactions.size(),
+        transactionRetFallbackUsed, renderedBlock);
   }
 
   private static TronApplicationContext setupTronContext(String[] configArgs) {
@@ -645,6 +774,81 @@ public class TransactionHistorySequentialExporter {
     System.out.println("  - endBlockNum = -1 means export to the latest block in the database");
   }
 
+  private static void finalizeWorkingDir(Phase phase, boolean keepTemp, File workingDir,
+      ExportBucketManifest manifest) {
+    if (keepTemp) {
+      logger.info("Temporary shard files retained at {}", workingDir.getAbsolutePath());
+      return;
+    }
+
+    if (phase == Phase.PREPARE) {
+      logger.info("Temporary shard files retained at {} because phase=prepare requires them "
+              + "for a later export run. Use -phase export or -phase all after verification.",
+          workingDir.getAbsolutePath());
+      return;
+    }
+
+    if (!isManifestFullyExported(manifest)) {
+      logger.info("Temporary shard files retained at {} because manifest still has "
+              + "unexported buckets.",
+          workingDir.getAbsolutePath());
+      return;
+    }
+
+    if (deleteRecursively(workingDir)) {
+      logger.info("Temporary shard files deleted from {}", workingDir.getAbsolutePath());
+    } else {
+      logger.warn("Failed to delete temporary shard files from {}. Remove manually if needed.",
+          workingDir.getAbsolutePath());
+    }
+  }
+
+  private static boolean closeManifest(ExportBucketManifest manifest) {
+    if (manifest == null) {
+      return true;
+    }
+    try {
+      manifest.close();
+      return true;
+    } catch (Exception e) {
+      logger.warn("Failed to finalize export manifest in {}: {}",
+          manifest.getWorkingDir().getAbsolutePath(), e.getMessage(), e);
+      return false;
+    }
+  }
+
+  private static boolean deleteRecursively(File target) {
+    if (target == null || !target.exists()) {
+      return true;
+    }
+
+    if (target.isDirectory()) {
+      File[] children = target.listFiles();
+      if (children != null) {
+        for (File child : children) {
+          if (!deleteRecursively(child)) {
+            return false;
+          }
+        }
+      }
+    }
+
+    return target.delete();
+  }
+
+  private static boolean isManifestFullyExported(ExportBucketManifest manifest) {
+    if (manifest == null) {
+      return false;
+    }
+
+    for (ExportBucketManifest.Bucket bucket : manifest.getBuckets()) {
+      if (!bucket.isExported()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   private static void closeQuietly(DBIterator iterator) {
     if (iterator == null) {
       return;
@@ -808,6 +1012,21 @@ public class TransactionHistorySequentialExporter {
     private long totalTransactions;
     private long exportedTransactions;
     private long missingTransactions;
+    private long indexBuildNanos;
+    private long futureWaitNanos;
+    private long blockWallNanos;
+    private long transactionWallNanos;
+    private long triggerBuildNanos;
+    private long serializationNanos;
+    private long outputNanos;
+    private long kafkaStringSendCount;
+    private long kafkaBytesSendCount;
+    private long prefetchedTransactionInfoHitCount;
+    private long prefetchedTransactionInfoMissCount;
+    private long transactionErrorCount;
+    private long slowestBlockNum = -1;
+    private int slowestBlockTxCount;
+    private long slowestBlockWallNanos;
     private long worstIncompleteBlockNum = -1;
     private int worstIncompleteMissingTx;
     private int worstIncompleteBlockTxCount;
@@ -859,6 +1078,52 @@ public class TransactionHistorySequentialExporter {
 
     void recordProcessTime(long processMillis) {
       this.processMillis = processMillis;
+    }
+
+    void recordBlockResult(BlockExportResult result) {
+      recordBlockScanned(result.getTransactionCount());
+      if (result.isEmptyBlock()) {
+        return;
+      }
+
+      if (result.isIncompleteBlock()) {
+        recordIncompleteBlock(result.getBlockNum(), result.getTransactionCount(),
+            result.getMissingTransactions());
+        return;
+      }
+
+      if (result.isTransactionRetFallbackUsed()) {
+        recordTransactionRetFallbackBlock(result.getTransactionCount());
+      }
+      recordExportedBlock(result.getExportedTransactions());
+
+      TransactionProcessor.BlockProcessingProfile profile = result.getProfile();
+      if (profile == null) {
+        return;
+      }
+
+      indexBuildNanos += profile.getIndexBuildNanos();
+      futureWaitNanos += profile.getFutureWaitNanos();
+      blockWallNanos += profile.getBlockWallNanos();
+      transactionWallNanos += profile.getTransactionWallNanos();
+      triggerBuildNanos += profile.getTriggerBuildNanos();
+      serializationNanos += profile.getSerializationNanos();
+      outputNanos += profile.getOutputNanos();
+      kafkaStringSendCount += profile.getKafkaStringSendCount();
+      kafkaBytesSendCount += profile.getKafkaBytesSendCount();
+      prefetchedTransactionInfoHitCount += profile.getPrefetchedTransactionInfoHitCount();
+      prefetchedTransactionInfoMissCount += profile.getPrefetchedTransactionInfoMissCount();
+      transactionErrorCount += profile.getTransactionErrorCount();
+
+      if (profile.getBlockWallNanos() > slowestBlockWallNanos) {
+        slowestBlockWallNanos = profile.getBlockWallNanos();
+        slowestBlockNum = profile.getBlockNum();
+        slowestBlockTxCount = profile.getTransactionCount();
+      }
+    }
+
+    void recordWindowKafkaFlush(long flushNanos) {
+      outputNanos += flushNanos;
     }
 
     long getStartBlockNum() {
@@ -929,6 +1194,66 @@ public class TransactionHistorySequentialExporter {
       return missingTransactions;
     }
 
+    long getIndexBuildNanos() {
+      return indexBuildNanos;
+    }
+
+    long getFutureWaitNanos() {
+      return futureWaitNanos;
+    }
+
+    long getBlockWallNanos() {
+      return blockWallNanos;
+    }
+
+    long getTransactionWallNanos() {
+      return transactionWallNanos;
+    }
+
+    long getTriggerBuildNanos() {
+      return triggerBuildNanos;
+    }
+
+    long getSerializationNanos() {
+      return serializationNanos;
+    }
+
+    long getOutputNanos() {
+      return outputNanos;
+    }
+
+    long getKafkaStringSendCount() {
+      return kafkaStringSendCount;
+    }
+
+    long getKafkaBytesSendCount() {
+      return kafkaBytesSendCount;
+    }
+
+    long getPrefetchedTransactionInfoHitCount() {
+      return prefetchedTransactionInfoHitCount;
+    }
+
+    long getPrefetchedTransactionInfoMissCount() {
+      return prefetchedTransactionInfoMissCount;
+    }
+
+    long getTransactionErrorCount() {
+      return transactionErrorCount;
+    }
+
+    long getSlowestBlockNum() {
+      return slowestBlockNum;
+    }
+
+    int getSlowestBlockTxCount() {
+      return slowestBlockTxCount;
+    }
+
+    long getSlowestBlockWallNanos() {
+      return slowestBlockWallNanos;
+    }
+
     long getWorstIncompleteBlockNum() {
       return worstIncompleteBlockNum;
     }
@@ -962,6 +1287,18 @@ public class TransactionHistorySequentialExporter {
     private long totalTransactions;
     private long exportedTransactions;
     private long missingTransactions;
+    private long indexBuildNanos;
+    private long futureWaitNanos;
+    private long blockWallNanos;
+    private long transactionWallNanos;
+    private long triggerBuildNanos;
+    private long serializationNanos;
+    private long outputNanos;
+    private long kafkaStringSendCount;
+    private long kafkaBytesSendCount;
+    private long prefetchedTransactionInfoHitCount;
+    private long prefetchedTransactionInfoMissCount;
+    private long transactionErrorCount;
     private BucketExportStats weakestBucket;
 
     void recordFilteredBucket() {
@@ -989,6 +1326,18 @@ public class TransactionHistorySequentialExporter {
       totalTransactions += bucketStats.getTotalTransactions();
       exportedTransactions += bucketStats.getExportedTransactions();
       missingTransactions += bucketStats.getMissingTransactions();
+      indexBuildNanos += bucketStats.getIndexBuildNanos();
+      futureWaitNanos += bucketStats.getFutureWaitNanos();
+      blockWallNanos += bucketStats.getBlockWallNanos();
+      transactionWallNanos += bucketStats.getTransactionWallNanos();
+      triggerBuildNanos += bucketStats.getTriggerBuildNanos();
+      serializationNanos += bucketStats.getSerializationNanos();
+      outputNanos += bucketStats.getOutputNanos();
+      kafkaStringSendCount += bucketStats.getKafkaStringSendCount();
+      kafkaBytesSendCount += bucketStats.getKafkaBytesSendCount();
+      prefetchedTransactionInfoHitCount += bucketStats.getPrefetchedTransactionInfoHitCount();
+      prefetchedTransactionInfoMissCount += bucketStats.getPrefetchedTransactionInfoMissCount();
+      transactionErrorCount += bucketStats.getTransactionErrorCount();
 
       if (bucketStats.getTotalTransactions() > 0 && (weakestBucket == null
           || coverage(bucketStats.getExportedTransactions(), bucketStats.getTotalTransactions())
@@ -1004,7 +1353,10 @@ public class TransactionHistorySequentialExporter {
               + "nonEmptyBlocks={} exportedBlocks={} incompleteBlocks={} txs={} exportedTxs={} "
               + "retFallbackBlocks={} retFallbackTxs={} missingTx={} txCoverage={} "
               + "infoCoverage={} shardRecords={} shardBytes={} "
-              + "load={}ms fetch={}ms process={}ms elapsed={}s",
+              + "load={}ms fetch={}ms process={}ms "
+              + "processDetail: index={}ms wait={}ms blockWall={}ms txWall={}ms trigger={}ms "
+              + "serialize={}ms emit={}ms kafkaStr={} kafkaBytes={} prefetchHit={} "
+              + "prefetchMiss={} txErrors={} elapsed={}s",
           processedBuckets, filteredBuckets, skippedExportedBuckets, blocksFetched,
           emptyBlocks, nonEmptyBlocks,
           exportedBlocks, incompleteBlocks, totalTransactions, exportedTransactions,
@@ -1012,6 +1364,12 @@ public class TransactionHistorySequentialExporter {
           percentage(exportedTransactions, totalTransactions),
           percentage(shardRecords, totalTransactions), shardRecords, formatBytes(shardPayloadBytes),
           shardLoadMillis, blockFetchMillis, processMillis,
+          nanosToMillis(indexBuildNanos), nanosToMillis(futureWaitNanos),
+          nanosToMillis(blockWallNanos), nanosToMillis(transactionWallNanos),
+          nanosToMillis(triggerBuildNanos), nanosToMillis(serializationNanos),
+          nanosToMillis(outputNanos), kafkaStringSendCount, kafkaBytesSendCount,
+          prefetchedTransactionInfoHitCount, prefetchedTransactionInfoMissCount,
+          transactionErrorCount,
           Math.max(1, (System.currentTimeMillis() - startTimeMillis) / 1000));
 
       if (weakestBucket != null) {
@@ -1023,6 +1381,88 @@ public class TransactionHistorySequentialExporter {
             weakestBucket.getIncompleteBlocks(), weakestBucket.getMissingTransactions(),
             weakestBucket.getShardRecordCount(), weakestBucket.getTotalTransactions());
       }
+    }
+  }
+
+  private static final class BlockExportResult {
+    private final long blockNum;
+    private final int transactionCount;
+    private final int missingTransactions;
+    private final boolean emptyBlock;
+    private final boolean incompleteBlock;
+    private final boolean transactionRetFallbackUsed;
+    private final TransactionProcessor.BlockRenderResult renderedBlock;
+
+    private BlockExportResult(long blockNum, int transactionCount, int missingTransactions,
+        boolean emptyBlock, boolean incompleteBlock, boolean transactionRetFallbackUsed,
+        TransactionProcessor.BlockRenderResult renderedBlock) {
+      this.blockNum = blockNum;
+      this.transactionCount = transactionCount;
+      this.missingTransactions = missingTransactions;
+      this.emptyBlock = emptyBlock;
+      this.incompleteBlock = incompleteBlock;
+      this.transactionRetFallbackUsed = transactionRetFallbackUsed;
+      this.renderedBlock = renderedBlock;
+    }
+
+    static BlockExportResult empty(long blockNum) {
+      return new BlockExportResult(blockNum, 0, 0, true, false, false, null);
+    }
+
+    static BlockExportResult incomplete(long blockNum, int transactionCount,
+        int missingTransactions) {
+      return new BlockExportResult(blockNum, transactionCount, missingTransactions,
+          false, true, false, null);
+    }
+
+    static BlockExportResult rendered(long blockNum, int transactionCount,
+        boolean transactionRetFallbackUsed,
+        TransactionProcessor.BlockRenderResult renderedBlock) {
+      return new BlockExportResult(blockNum, transactionCount, 0,
+          false, false, transactionRetFallbackUsed, renderedBlock);
+    }
+
+    long getBlockNum() {
+      return blockNum;
+    }
+
+    int getTransactionCount() {
+      return transactionCount;
+    }
+
+    int getExportedTransactions() {
+      if (!hasRenderedBlock() || getProfile() == null) {
+        return 0;
+      }
+      return getProfile().getSuccessfulOutputTransactionCount();
+    }
+
+    int getMissingTransactions() {
+      return missingTransactions;
+    }
+
+    boolean isEmptyBlock() {
+      return emptyBlock;
+    }
+
+    boolean isIncompleteBlock() {
+      return incompleteBlock;
+    }
+
+    boolean isTransactionRetFallbackUsed() {
+      return transactionRetFallbackUsed;
+    }
+
+    boolean hasRenderedBlock() {
+      return renderedBlock != null;
+    }
+
+    TransactionProcessor.BlockRenderResult getRenderedBlock() {
+      return renderedBlock;
+    }
+
+    TransactionProcessor.BlockProcessingProfile getProfile() {
+      return renderedBlock == null ? null : renderedBlock.getProfile();
     }
   }
 
@@ -1055,5 +1495,9 @@ public class TransactionHistorySequentialExporter {
       return 0;
     }
     return count / elapsedSeconds;
+  }
+
+  private static long nanosToMillis(long nanos) {
+    return nanos / 1_000_000L;
   }
 }

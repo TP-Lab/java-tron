@@ -51,7 +51,7 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 | `-kt <topic>` | string | 无 | Kafka topic 名称 |
 | `-kafka-rate <rate>` | int | `0` | Kafka 速率限制，`0` 表示不限速 |
 | `-threads <count>` | int | CPU 核心数 × 2 | 交易处理线程池大小 |
-| `-keep-temp` | flag | false | 保留临时 shard 文件 |
+| `-keep-temp` | flag | false | 在 `export/all` 成功后保留临时 shard 文件；未全量导完时默认也会保留 |
 
 ---
 
@@ -69,6 +69,8 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 - 需要重复验证导出逻辑：先 `prepare`，后多次 `export`
 - `export` 阶段要求 `-tmp` 指向已存在的 manifest 目录
 - `export` 阶段会以 `-tmp` 中的 manifest 为基础，只处理与命令行区块范围相交且 `exported=false` 的 bucket
+- `nextExportBlockNum` 是**桶内前缀 checkpoint**：同一个 `-tmp` 目录只支持从当前 checkpoint 向后续跑，不支持跳过未导出的桶内前缀直接导更靠后的子区间
+- 如果 `-tmp` 是旧版本导出器留下的目录，并且已经写入过部分 checkpoint，当前版本会拒绝继续复用；请重新 `prepare` 或使用新的 `-tmp`
 
 ---
 
@@ -86,6 +88,7 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 
 - Kafka 仅支持 `trigger` 和 `trigger-proto`
 - 若指定 Kafka 参数但格式不是这两种，Kafka 会自动禁用
+- 启用 Kafka 时，仍会保留异步失败回传与 `flush` 校验
 
 ---
 
@@ -101,12 +104,14 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 
 - `manifest.properties`
 - `buckets.tsv`
+- `checkpoints.log`
 - `history-<bucketStart>-<bucketEnd>.bin`
 
 含义：
 
 - `manifest.properties`：导出范围与桶大小
-- `buckets.tsv`：每个桶的准备状态、导出状态、记录数、字节数
+- `buckets.tsv`：每个桶的静态状态快照，包括准备状态、导出状态、记录数、字节数，以及最近一次落盘的 `nextExportBlockNum`
+- `checkpoints.log`：`export` 阶段的轻量级追加式 checkpoint 日志；运行中优先靠它推进 `nextExportBlockNum`
 - `history-*.bin`：该桶对应的 `TransactionInfo` shard 数据
 
 ---
@@ -154,7 +159,9 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
 - `prepare` 已完成
 - 需要重复验证导出逻辑、格式或回退到 `transactionRetStore` 的行为
 - 不想重复全扫 `transactionHistoryStore`
-- 需要基于同一个 `-tmp` 目录，从更靠后的区块继续导出
+- 需要基于同一个 `-tmp` 目录，从当前 checkpoint 继续向后导出
+- 当前实现会按成功窗口追加 checkpoint；若中途失败，重跑会优先从 `checkpoints.log` 中恢复 `nextExportBlockNum`
+- 如果你想先导某个更靠后的独立子区间，请使用新的 `-tmp` 目录重新 `prepare`
 
 ### 一次跑完整链路：prepare + export
 
@@ -192,6 +199,12 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
   -keep-temp
 ```
 
+适用场景：
+
+- `export` 阶段需要进一步压榨 CPU 与 Kafka 吞吐
+- 目标是减少“每笔交易一个 future”的调度开销
+- Kafka broker、topic 分区和网络都足够支撑更大的批量发送
+
 ### 从 `transactionHistoryStore` 分界点之后直接导到最新块
 
 ```bash
@@ -218,9 +231,11 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
 - 程序以**只读模式**打开数据库，不会修改源数据库。
 - 该工具更适合**大区间 / 全量导出**，不适合很小区间的临时抽样。
 - `prepare` 阶段会顺序扫描整张 `transactionHistoryStore`，耗时取决于全库大小，不只取决于目标区间大小。
-- `export` 阶段会优先使用 prepare 生成的 shard；如果 shard 中缺少某个区块的 `TransactionInfo`，会先尝试从 `transactionRetStore` 读取整块结果，仍不完整时会**立即失败退出**，不会跳过该区块。
+- `export` 阶段会优先使用 prepare 生成的 shard；如果 shard 中缺少某个区块的 `TransactionInfo`，会先尝试从 `transactionRetStore` 读取整块结果，仍不完整时会记录 `incompleteBlocks / missingTx / worstIncompleteBlock` 并**立即失败退出**。
 - `-bucket-blocks` 越大，单桶 shard 越少，但单桶内存占用越高。
 - 若需要重复调试 `export` 阶段，建议显式指定 `-tmp` 并保留 shard。
+- 未指定 `-keep-temp` 时，只有 `export/all` 成功且 manifest 中所有 bucket 都已导完，才会自动删除临时目录；`prepare` 阶段或部分范围导出成功后会保留临时目录以支持续跑。
+- `export` 阶段不再为每个区块重写整份 `buckets.tsv`，而是先追加 `checkpoints.log`，在程序正常结束时再落一次完整快照。
 - 所有资源会在程序退出时自动释放。
 
 ---
@@ -257,6 +272,17 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
 - `scan`：统计指定区间内已有多少非空块能从 `transactionRetStore` 直接命中。
 - `verify`：校验指定区间内已存在的 `transactionRetStore` 记录是否与区块交易列表一致。
 - 该工具用于**停机节点或数据库副本**，不要对运行中的主库做在线排查。
+
+### 现象 4：`export` 吞吐只有几千到一万 tx/s，但 CPU、磁盘都不高
+
+优先看新增日志：
+
+- `Export bucket ... processDetail`
+
+判断方法：
+
+- `processDetail.emit` 高：优先怀疑 Kafka 发送侧
+- CPU、磁盘都不高且 `emit` 不高：通常是块级并行度不够或 topic 分区不足
 
 示例：检查分界点附近 `transactionRetStore` 覆盖情况
 
@@ -440,12 +466,12 @@ missingTx=2 txCount=157. Neither prepared shard nor transactionRetStore can full
 
 ## 与其他工具的关系
 
-- [BlockTransactionPrinter.java](/c:/workspace/TP-Lab/java-tron/framework/src/main/java/org/tron/program/BlockTransactionPrinter.java)
+- [BlockTransactionPrinter.java](./BlockTransactionPrinter.java)
   - 适合已有 `transactionRetStore` 或中小区间在线导出
-- [TransactionRetBackfiller.java](/c:/workspace/TP-Lab/java-tron/framework/src/main/java/org/tron/program/TransactionRetBackfiller.java)
+- [TransactionRetBackfiller.java](./TransactionRetBackfiller.java)
   - 适合修复数据库形态，供后续长期复用
 - `TransactionHistorySequentialExporter`
   - 适合一次性大规模离线导出，目标是把 `txid` 随机读改成顺序扫描
 
 > 设计背景与取舍说明见：
-> [transaction-history-sequential-export-plan.md](/c:/workspace/TP-Lab/java-tron/docs/transaction-history-sequential-export-plan.md)
+> [transaction-history-sequential-export-plan.md](../../../../../../docs/transaction-history-sequential-export-plan.md)
