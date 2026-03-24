@@ -2,10 +2,8 @@ package org.tron.program;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
@@ -81,7 +79,21 @@ public class TransactionHistorySequentialExporter {
     long bucketBlockCount = parseLongArg(args, "-bucket-blocks", DEFAULT_BUCKET_BLOCKS);
     String customTempDir = parseStringArg(args, "-tmp", null);
     boolean keepTemp = hasFlag(args, "-keep-temp");
-    boolean preferTransactionRet = hasFlag(args, "-prefer-transaction-ret");
+    boolean deprecatedPreferTransactionRet = hasFlag(args, "-prefer-transaction-ret");
+    boolean mergeTransactionRetRequested = hasFlag(args, "-prepare-merge-transaction-ret")
+        || deprecatedPreferTransactionRet;
+    boolean mergeTransactionRet = mergeTransactionRetRequested
+        && (phase == Phase.PREPARE || phase == Phase.ALL);
+
+    if (deprecatedPreferTransactionRet) {
+      logger.warn("-prefer-transaction-ret is deprecated. Export now consumes shard data only. "
+              + "Use -prepare-merge-transaction-ret during prepare/all to merge "
+              + "transactionRetStore into shard files.");
+    }
+    if (phase == Phase.EXPORT && mergeTransactionRetRequested) {
+      logger.warn("-prepare-merge-transaction-ret only affects prepare/all and will be ignored "
+          + "for phase=export.");
+    }
 
     if (customThreadPoolSize <= 0) {
       customThreadPoolSize = DEFAULT_THREAD_POOL_SIZE;
@@ -164,22 +176,28 @@ public class TransactionHistorySequentialExporter {
       }
 
       logger.info("Sequential export phase={} manifestRange=[{}-{}] requestedRange=[{}-{}] "
-              + "effectiveExportRange=[{}-{}] bucketBlocks={} preferTransactionRet={} tempDir={}",
+              + "effectiveExportRange=[{}-{}] bucketBlocks={} mergeTransactionRet={} tempDir={}",
           phase.name().toLowerCase(), manifest.getStartBlockNum(), manifest.getEndBlockNum(),
           startBlockNum, endBlockNum, exportStartBlockNum, exportEndBlockNum,
-          manifest.getBucketBlockCount(), preferTransactionRet,
+          manifest.getBucketBlockCount(), mergeTransactionRet,
           workingDir.getAbsolutePath());
 
       if (phase == Phase.PREPARE || phase == Phase.ALL) {
         PrepareStats prepareStats =
             prepareHistoryShards(chainBaseManager.getTransactionHistoryStore(), manifest);
         prepareStats.logSummary(manifest);
+
+        if (mergeTransactionRet) {
+          TransactionRetMergeStats mergeStats =
+              mergeTransactionRetShards(chainBaseManager, manifest);
+          mergeStats.logSummary(manifest);
+        }
       }
 
       if (phase == Phase.EXPORT || phase == Phase.ALL) {
         ExportStats exportStats = exportBuckets(chainBaseManager, wallet, kafkaSender, processor,
             stats, manifest, exportStartBlockNum, exportEndBlockNum, outputFormat, useKafka,
-            kafkaTopic, blockConcurrency, preferTransactionRet);
+            kafkaTopic, blockConcurrency);
         exportStats.logSummary();
         stats.logFinal();
       }
@@ -245,11 +263,236 @@ public class TransactionHistorySequentialExporter {
     return prepareStats;
   }
 
+  private static TransactionRetMergeStats mergeTransactionRetShards(
+      ChainBaseManager chainBaseManager, ExportBucketManifest manifest) throws Exception {
+    logger.info("Prepare merge phase started - sequential scan transactionRetStore");
+
+    if (chainBaseManager.getTransactionRetStore() == null) {
+      logger.warn("Skip transactionRetStore merge because transactionRetStore is unavailable");
+      return new TransactionRetMergeStats();
+    }
+
+    TransactionRetMergeStats mergeStats = new TransactionRetMergeStats();
+    HistoryShardLoader shardLoader = new HistoryShardLoader();
+    DBIterator iterator = null;
+    try {
+      iterator = (DBIterator) chainBaseManager.getTransactionRetStore().getDb().iterator();
+      iterator.seek(ByteArray.fromLong(manifest.getStartBlockNum()));
+
+      for (ExportBucketManifest.Bucket bucket : manifest.getBuckets()) {
+        while (iterator.valid()) {
+          long blockNum = ByteArray.toLong(iterator.getKey());
+          if (blockNum < bucket.getStartBlockNum()) {
+            iterator.next();
+            continue;
+          }
+          break;
+        }
+
+        if (!iterator.valid()) {
+          break;
+        }
+
+        long currentBlockNum = ByteArray.toLong(iterator.getKey());
+        if (currentBlockNum > manifest.getEndBlockNum()) {
+          break;
+        }
+        if (currentBlockNum > bucket.getEndBlockNum()) {
+          continue;
+        }
+
+        long bucketStartTime = System.currentTimeMillis();
+        HistoryShardLoader.BucketShardData shardData =
+            shardLoader.load(manifest.resolveShardFile(bucket));
+        Map<Long, Map<WrappedByteArray, TransactionInfo>> bucketInfos =
+            shardData.getInfosByBlock();
+        boolean bucketDirty = false;
+        int bucketScannedRetBlocks = 0;
+        int bucketFilledBlocks = 0;
+        int bucketReplacedBlocks = 0;
+        int bucketConflictedBlocks = 0;
+        int bucketSkippedBlocks = 0;
+        long bucketMergedTransactions = 0;
+
+        while (iterator.valid()) {
+          long blockNum = ByteArray.toLong(iterator.getKey());
+          if (blockNum > manifest.getEndBlockNum() || blockNum > bucket.getEndBlockNum()) {
+            break;
+          }
+
+          bucketScannedRetBlocks++;
+          mergeStats.recordScannedBlock();
+          byte[] value = iterator.getValue();
+          if (value == null) {
+            bucketSkippedBlocks++;
+            mergeStats.recordSkippedBlock();
+            iterator.next();
+            continue;
+          }
+
+          try {
+            TransactionRetCapsule transactionRetCapsule = new TransactionRetCapsule(value);
+            BlockMergeOutcome outcome =
+                mergeTransactionRetBlock(chainBaseManager, bucketInfos, blockNum,
+                    transactionRetCapsule);
+            switch (outcome.getKind()) {
+              case FILLED:
+                bucketDirty = true;
+                bucketFilledBlocks++;
+                bucketMergedTransactions += outcome.getTransactionCount();
+                mergeStats.recordFilledBlock(outcome.getTransactionCount());
+                break;
+              case REPLACED:
+                bucketDirty = true;
+                bucketReplacedBlocks++;
+                bucketMergedTransactions += outcome.getTransactionCount();
+                mergeStats.recordReplacedBlock(outcome.getTransactionCount());
+                break;
+              case CONFLICT_REPLACED:
+                bucketDirty = true;
+                bucketConflictedBlocks++;
+                bucketMergedTransactions += outcome.getTransactionCount();
+                mergeStats.recordConflictedBlock(outcome.getTransactionCount());
+                break;
+              case INVALID:
+                mergeStats.recordInvalidBlock();
+                break;
+              case SKIPPED:
+              default:
+                bucketSkippedBlocks++;
+                mergeStats.recordSkippedBlock();
+                break;
+            }
+          } catch (BadItemException e) {
+            mergeStats.recordMalformedBlock();
+            logger.warn("Skip malformed TransactionRetCapsule during prepare merge for block {}: {}",
+                blockNum, e.getMessage());
+          } finally {
+            iterator.next();
+          }
+        }
+
+        if (!bucketDirty) {
+          continue;
+        }
+
+        HistoryShardWriter.ShardStats shardStats = HistoryShardWriter.rewriteShardFile(
+            manifest.resolveShardFile(bucket), bucketInfos);
+        bucket.markPrepared(shardStats.getRecordCount(), shardStats.getSerializedBytes());
+        mergeStats.recordRewrittenBucket();
+
+        logger.info("Prepare merge bucket [{}-{}] | retBlocks={} filledBlocks={} "
+                + "replacedBlocks={} conflictedBlocks={} skippedBlocks={} mergedTxs={} "
+                + "shardRecords={} shardBytes={} elapsed={}ms",
+            bucket.getStartBlockNum(), bucket.getEndBlockNum(), bucketScannedRetBlocks,
+            bucketFilledBlocks, bucketReplacedBlocks, bucketConflictedBlocks,
+            bucketSkippedBlocks, bucketMergedTransactions, shardStats.getRecordCount(),
+            formatBytes(shardStats.getSerializedBytes()),
+            System.currentTimeMillis() - bucketStartTime);
+      }
+
+      manifest.save();
+    } finally {
+      closeQuietly(iterator);
+    }
+
+    return mergeStats;
+  }
+
+  private static BlockMergeOutcome mergeTransactionRetBlock(
+      ChainBaseManager chainBaseManager,
+      Map<Long, Map<WrappedByteArray, TransactionInfo>> bucketInfos, long blockNum,
+      TransactionRetCapsule transactionRetCapsule) {
+    Map<WrappedByteArray, TransactionInfo> replacementInfos =
+        toValidatedTransactionInfoMap(chainBaseManager, blockNum, transactionRetCapsule);
+    if (replacementInfos == null) {
+      return BlockMergeOutcome.invalid();
+    }
+    if (replacementInfos.isEmpty()) {
+      return BlockMergeOutcome.skipped();
+    }
+
+    Map<WrappedByteArray, TransactionInfo> existingInfos = bucketInfos.get(blockNum);
+    if (existingInfos == null || existingInfos.isEmpty()) {
+      bucketInfos.put(blockNum, replacementInfos);
+      return BlockMergeOutcome.filled(replacementInfos.size());
+    }
+
+    if (sameTransactionSet(existingInfos, replacementInfos)) {
+      return BlockMergeOutcome.skipped();
+    }
+
+    bucketInfos.put(blockNum, replacementInfos);
+    if (replacementInfos.keySet().containsAll(existingInfos.keySet())) {
+      return BlockMergeOutcome.replaced(replacementInfos.size());
+    }
+    return BlockMergeOutcome.conflictReplaced(replacementInfos.size());
+  }
+
+  private static Map<WrappedByteArray, TransactionInfo> toValidatedTransactionInfoMap(
+      ChainBaseManager chainBaseManager, long blockNum,
+      TransactionRetCapsule transactionRetCapsule) {
+    if (transactionRetCapsule == null || transactionRetCapsule.getInstance() == null) {
+      return null;
+    }
+
+    BlockCapsule block;
+    try {
+      block = chainBaseManager.getBlockByNum(blockNum);
+    } catch (Exception e) {
+      logger.warn("Skip transactionRetStore merge for block {} because block lookup failed: {}",
+          blockNum, e.getMessage());
+      return null;
+    }
+
+    List<TransactionCapsule> transactions = block.getTransactions();
+    List<TransactionInfo> transactionInfos =
+        transactionRetCapsule.getInstance().getTransactioninfoList();
+    if (transactionInfos.size() != transactions.size()) {
+      logger.warn("Skip transactionRetStore merge for block {} because count mismatch: "
+              + "retCount={} txCount={}", blockNum, transactionInfos.size(), transactions.size());
+      return null;
+    }
+    if (transactionRetCapsule.getInstance().getBlockNumber() != blockNum) {
+      logger.warn("Skip transactionRetStore merge for block {} because ret blockNumber={} ",
+          blockNum, transactionRetCapsule.getInstance().getBlockNumber());
+      return null;
+    }
+
+    Map<WrappedByteArray, TransactionInfo> indexedInfos = new java.util.HashMap<>();
+    for (TransactionInfo transactionInfo : transactionInfos) {
+      indexedInfos.put(WrappedByteArray.of(transactionInfo.getId().toByteArray()), transactionInfo);
+    }
+    if (indexedInfos.size() != transactions.size()) {
+      logger.warn("Skip transactionRetStore merge for block {} because duplicate txid detected: "
+              + "retCount={} uniqueRetCount={} txCount={}",
+          blockNum, transactionInfos.size(), indexedInfos.size(), transactions.size());
+      return null;
+    }
+
+    for (TransactionCapsule transactionCapsule : transactions) {
+      WrappedByteArray txId = WrappedByteArray.of(transactionCapsule.getTransactionId().getBytes());
+      if (!indexedInfos.containsKey(txId)) {
+        logger.warn("Skip transactionRetStore merge for block {} because txid {} is missing in ret",
+            blockNum, ByteArray.toHexString(transactionCapsule.getTransactionId().getBytes()));
+        return null;
+      }
+    }
+
+    return indexedInfos;
+  }
+
+  private static boolean sameTransactionSet(Map<WrappedByteArray, TransactionInfo> left,
+      Map<WrappedByteArray, TransactionInfo> right) {
+    return left.size() == right.size()
+        && left.keySet().containsAll(right.keySet())
+        && right.keySet().containsAll(left.keySet());
+  }
+
   private static ExportStats exportBuckets(ChainBaseManager chainBaseManager, Wallet wallet,
       KafkaSender kafkaSender, TransactionProcessor processor, ProcessingStats stats,
       ExportBucketManifest manifest, long exportStartBlockNum, long exportEndBlockNum,
-      String outputFormat, boolean useKafka, String kafkaTopic, int blockConcurrency,
-      boolean preferTransactionRet)
+      String outputFormat, boolean useKafka, String kafkaTopic, int blockConcurrency)
       throws Exception {
     logger.info("Export phase started - replay blocks with prepared history shards "
             + "for effective range [{}-{}]", exportStartBlockNum, exportEndBlockNum);
@@ -316,6 +559,7 @@ public class TransactionHistorySequentialExporter {
       long fetchStartTime = System.currentTimeMillis();
       List<BlockCapsule> blocks = fetchBlocks(chainBaseManager, bucketExportStart,
           bucketExportEnd - bucketExportStart + 1);
+      validateFetchedBlocks(bucketExportStart, bucketExportEnd, blocks);
       long fetchDurationMs = System.currentTimeMillis() - fetchStartTime;
       bucketStats.recordBlockFetch(blocks.size(), fetchDurationMs);
       long processStartTime = System.currentTimeMillis();
@@ -329,7 +573,7 @@ public class TransactionHistorySequentialExporter {
           final BlockCapsule block = blocks.get(i);
           futures.add(CompletableFuture.supplyAsync(() -> processExportBlock(block,
               shardData.getBlockInfos(block.getNum()), chainBaseManager, wallet, processor,
-              outputFormat, useKafka, preferTransactionRet), processor.getBlockExecutor()));
+              outputFormat, useKafka), processor.getBlockExecutor()));
         }
 
         List<BlockExportResult> windowResults = new ArrayList<>(windowEnd - windowStart);
@@ -363,7 +607,8 @@ public class TransactionHistorySequentialExporter {
                 bucketStats.getWorstIncompleteMissingTx(), bucket.getNextExportBlockNum());
             throw new IllegalStateException(String.format(
                 "Incomplete export data for block %d: missingTx=%d txCount=%d. "
-                    + "Neither prepared shard nor transactionRetStore can fully cover this block.",
+                    + "Prepared shard cannot fully cover this block. Re-run prepare with "
+                    + "-prepare-merge-transaction-ret or rebuild shard data.",
                 result.getBlockNum(), result.getMissingTransactions(),
                 result.getTransactionCount()));
           }
@@ -404,8 +649,7 @@ public class TransactionHistorySequentialExporter {
       bucketStats.recordProcessTime(System.currentTimeMillis() - processStartTime);
       logger.info("Export bucket [{}-{}] | blocks={} txs={} shardRecords={} shardBytes={} "
               + "load={}ms fetch={}ms process={}ms emptyBlocks={} nonEmptyBlocks={} "
-              + "exportedBlocks={} incompleteBlocks={} retFallbackBlocks={} retFallbackTxs={} "
-              + "txCoverage={} infoCoverage={} missingTx={} "
+              + "exportedBlocks={} incompleteBlocks={} txCoverage={} infoCoverage={} missingTx={} "
               + "processDetail: index={}ms wait={}ms blockWall={}ms txWall={}ms trigger={}ms "
               + "serialize={}ms emit={}ms kafkaStr={} kafkaBytes={} prefetchHit={} "
               + "prefetchMiss={} txErrors={} slowestBlock={}({} tx, {}ms) "
@@ -416,8 +660,6 @@ public class TransactionHistorySequentialExporter {
           bucketStats.getBlockFetchMillis(), bucketStats.getProcessMillis(),
           bucketStats.getEmptyBlocks(), bucketStats.getNonEmptyBlocks(),
           bucketStats.getExportedBlocks(), bucketStats.getIncompleteBlocks(),
-          bucketStats.getTransactionRetFallbackBlocks(),
-          bucketStats.getTransactionRetFallbackTransactions(),
           percentage(bucketStats.getExportedTransactions(), bucketStats.getTotalTransactions()),
           percentage(bucketStats.getShardRecordCount(), bucketStats.getTotalTransactions()),
           bucketStats.getMissingTransactions(),
@@ -474,81 +716,15 @@ public class TransactionHistorySequentialExporter {
     return PreparedBlockRet.complete(transactionRetCapsule);
   }
 
-  private static TransactionRetCapsule readTransactionRetFallback(BlockCapsule block,
-      ChainBaseManager chainBaseManager) {
-    if (chainBaseManager == null || chainBaseManager.getTransactionRetStore() == null) {
-      return null;
-    }
-
-    TransactionRetCapsule transactionRetCapsule;
-    try {
-      transactionRetCapsule = chainBaseManager.getTransactionRetStore()
-          .getTransactionInfoByBlockNum(ByteArray.fromLong(block.getNum()));
-    } catch (Exception e) {
-      logger.warn("Failed to read transactionRetStore fallback for block {}: {}",
-          block.getNum(), e.getMessage());
-      return null;
-    }
-
-    if (transactionRetCapsule == null || transactionRetCapsule.getInstance() == null) {
-      return null;
-    }
-
-    List<TransactionInfo> infos = transactionRetCapsule.getInstance().getTransactioninfoList();
-    List<TransactionCapsule> transactions = block.getTransactions();
-    Set<WrappedByteArray> txIds = new HashSet<>(transactions.size());
-    for (TransactionCapsule transactionCapsule : transactions) {
-      txIds.add(WrappedByteArray.of(transactionCapsule.getTransactionId().getBytes()));
-    }
-
-    for (TransactionInfo info : infos) {
-      txIds.remove(WrappedByteArray.of(info.getId().toByteArray()));
-    }
-
-    if (!txIds.isEmpty()) {
-      logger.warn("Ignore transactionRetStore fallback block={} retCount={} txCount={} missingTx={}",
-          block.getNum(), infos.size(), transactions.size(), txIds.size());
-      return null;
-    }
-
-    return transactionRetCapsule;
-  }
-
   private static BlockExportResult processExportBlock(BlockCapsule block,
       Map<WrappedByteArray, TransactionInfo> blockInfos, ChainBaseManager chainBaseManager,
-      Wallet wallet, TransactionProcessor processor, String outputFormat,
-      boolean useKafka, boolean preferTransactionRet) {
+      Wallet wallet, TransactionProcessor processor, String outputFormat, boolean useKafka) {
     List<TransactionCapsule> transactions = block.getTransactions();
     if (transactions.isEmpty()) {
       return BlockExportResult.empty(block.getNum());
     }
 
-    boolean transactionRetFallbackUsed = false;
-    PreparedBlockRet preparedBlockRet;
-    if (preferTransactionRet) {
-      TransactionRetCapsule preferredRet = readTransactionRetFallback(block, chainBaseManager);
-      if (preferredRet != null) {
-        preparedBlockRet = PreparedBlockRet.complete(preferredRet);
-        transactionRetFallbackUsed = true;
-        logger.debug("Prefer transactionRetStore for block={} txCount={}",
-            block.getNum(), block.getTransactions().size());
-      } else {
-        preparedBlockRet = buildPreparedTransactionRet(block, blockInfos);
-      }
-    } else {
-      preparedBlockRet = buildPreparedTransactionRet(block, blockInfos);
-      if (!preparedBlockRet.isComplete()) {
-        int missingPreparedTransactions = preparedBlockRet.getMissingTransactionCount();
-        TransactionRetCapsule fallbackRet = readTransactionRetFallback(block, chainBaseManager);
-        if (fallbackRet != null) {
-          preparedBlockRet = PreparedBlockRet.complete(fallbackRet);
-          transactionRetFallbackUsed = true;
-          logger.debug("Use transactionRetStore fallback for block={} missingPreparedTx={} txCount={}",
-              block.getNum(), missingPreparedTransactions,
-              block.getTransactions().size());
-        }
-      }
-    }
+    PreparedBlockRet preparedBlockRet = buildPreparedTransactionRet(block, blockInfos);
 
     if (!preparedBlockRet.isComplete()) {
       return BlockExportResult.incomplete(block.getNum(), transactions.size(),
@@ -566,8 +742,7 @@ public class TransactionHistorySequentialExporter {
           transactions.size()));
     }
 
-    return BlockExportResult.rendered(block.getNum(), transactions.size(),
-        transactionRetFallbackUsed, renderedBlock);
+    return BlockExportResult.rendered(block.getNum(), transactions.size(), renderedBlock);
   }
 
   private static TronApplicationContext setupTronContext(String[] configArgs) {
@@ -641,6 +816,28 @@ public class TransactionHistorySequentialExporter {
     return chainBaseManager.getBlockStore().getLimitNumber(currentStart, limit);
   }
 
+  private static void validateFetchedBlocks(long expectedStartBlockNum, long expectedEndBlockNum,
+      List<BlockCapsule> blocks) {
+    long expectedCount = expectedEndBlockNum - expectedStartBlockNum + 1;
+    if (blocks.size() != expectedCount) {
+      throw new IllegalStateException(String.format(
+          "Fetched block count mismatch for range [%d-%d]: expected=%d actual=%d",
+          expectedStartBlockNum, expectedEndBlockNum, expectedCount, blocks.size()));
+    }
+
+    for (int i = 0; i < blocks.size(); i++) {
+      BlockCapsule block = blocks.get(i);
+      long expectedBlockNum = expectedStartBlockNum + i;
+      if (block == null || block.getNum() != expectedBlockNum) {
+        throw new IllegalStateException(String.format(
+            "Fetched non-contiguous block sequence for range [%d-%d] at index=%d: "
+                + "expectedBlock=%d actualBlock=%s",
+            expectedStartBlockNum, expectedEndBlockNum, i, expectedBlockNum,
+            block == null ? "null" : String.valueOf(block.getNum())));
+      }
+    }
+  }
+
   private static long getLowestBlockNum(ChainBaseManager chainBaseManager) {
     try {
       long lowest = chainBaseManager.getLowestBlockNum();
@@ -697,7 +894,8 @@ public class TransactionHistorySequentialExporter {
           || "-kt".equals(args[i]) || "-kafka-rate".equals(args[i]) || "-threads".equals(args[i])
           || "-tmp".equals(args[i]) || "-bucket-blocks".equals(args[i])) {
         i++;
-      } else if ("-keep-temp".equals(args[i]) || "-prefer-transaction-ret".equals(args[i])) {
+      } else if ("-keep-temp".equals(args[i]) || "-prefer-transaction-ret".equals(args[i])
+          || "-prepare-merge-transaction-ret".equals(args[i])) {
         // flag only
       } else {
         filteredArgs.add(args[i]);
@@ -785,7 +983,8 @@ public class TransactionHistorySequentialExporter {
     System.out.println("  -kafka-rate <rate>: Kafka rate limit in messages/second");
     System.out.println("  -threads <count>: Transaction processing thread pool size");
     System.out.println("  -keep-temp: Retain shard files after export");
-    System.out.println("  -prefer-transaction-ret: Prefer transactionRetStore over shard data");
+    System.out.println("  -prepare-merge-transaction-ret: Merge transactionRetStore into shard "
+        + "after scanning transactionHistoryStore");
     System.out.println("Notes:");
     System.out.println("  - endBlockNum = -1 means export to the latest block in the database");
   }
@@ -1010,6 +1209,110 @@ public class TransactionHistorySequentialExporter {
     }
   }
 
+  private static final class TransactionRetMergeStats {
+    private final long startTimeMillis = System.currentTimeMillis();
+    private long scannedBlocks;
+    private long filledBlocks;
+    private long replacedBlocks;
+    private long conflictedBlocks;
+    private long invalidBlocks;
+    private long skippedBlocks;
+    private long malformedBlocks;
+    private long mergedTransactions;
+    private int rewrittenBuckets;
+
+    void recordScannedBlock() {
+      scannedBlocks++;
+    }
+
+    void recordFilledBlock(int transactionCount) {
+      filledBlocks++;
+      mergedTransactions += transactionCount;
+    }
+
+    void recordReplacedBlock(int transactionCount) {
+      replacedBlocks++;
+      mergedTransactions += transactionCount;
+    }
+
+    void recordConflictedBlock(int transactionCount) {
+      conflictedBlocks++;
+      mergedTransactions += transactionCount;
+    }
+
+    void recordSkippedBlock() {
+      skippedBlocks++;
+    }
+
+    void recordInvalidBlock() {
+      invalidBlocks++;
+    }
+
+    void recordMalformedBlock() {
+      malformedBlocks++;
+    }
+
+    void recordRewrittenBucket() {
+      rewrittenBuckets++;
+    }
+
+    void logSummary(ExportBucketManifest manifest) {
+      logger.info("Prepare merge summary | scannedRetBlocks={} filledBlocks={} "
+              + "replacedBlocks={} conflictedBlocks={} invalidBlocks={} skippedBlocks={} malformedBlocks={} "
+              + "rewrittenBuckets={} mergedTxs={} elapsed={}s buckets={}",
+          scannedBlocks, filledBlocks, replacedBlocks, conflictedBlocks, invalidBlocks, skippedBlocks,
+          malformedBlocks, rewrittenBuckets, mergedTransactions,
+          Math.max(1, (System.currentTimeMillis() - startTimeMillis) / 1000),
+          manifest.getBuckets().size());
+    }
+  }
+
+  private static final class BlockMergeOutcome {
+    private final MergeKind kind;
+    private final int transactionCount;
+
+    private BlockMergeOutcome(MergeKind kind, int transactionCount) {
+      this.kind = kind;
+      this.transactionCount = transactionCount;
+    }
+
+    static BlockMergeOutcome filled(int transactionCount) {
+      return new BlockMergeOutcome(MergeKind.FILLED, transactionCount);
+    }
+
+    static BlockMergeOutcome replaced(int transactionCount) {
+      return new BlockMergeOutcome(MergeKind.REPLACED, transactionCount);
+    }
+
+    static BlockMergeOutcome conflictReplaced(int transactionCount) {
+      return new BlockMergeOutcome(MergeKind.CONFLICT_REPLACED, transactionCount);
+    }
+
+    static BlockMergeOutcome skipped() {
+      return new BlockMergeOutcome(MergeKind.SKIPPED, 0);
+    }
+
+    static BlockMergeOutcome invalid() {
+      return new BlockMergeOutcome(MergeKind.INVALID, 0);
+    }
+
+    MergeKind getKind() {
+      return kind;
+    }
+
+    int getTransactionCount() {
+      return transactionCount;
+    }
+  }
+
+  private enum MergeKind {
+    FILLED,
+    REPLACED,
+    CONFLICT_REPLACED,
+    INVALID,
+    SKIPPED
+  }
+
   private static final class BucketExportStats {
     private final long startBlockNum;
     private final long endBlockNum;
@@ -1023,8 +1326,6 @@ public class TransactionHistorySequentialExporter {
     private long nonEmptyBlocks;
     private long exportedBlocks;
     private long incompleteBlocks;
-    private long transactionRetFallbackBlocks;
-    private long transactionRetFallbackTransactions;
     private long totalTransactions;
     private long exportedTransactions;
     private long missingTransactions;
@@ -1087,11 +1388,6 @@ public class TransactionHistorySequentialExporter {
       }
     }
 
-    void recordTransactionRetFallbackBlock(int transactionCount) {
-      transactionRetFallbackBlocks++;
-      transactionRetFallbackTransactions += transactionCount;
-    }
-
     void recordProcessTime(long processMillis) {
       this.processMillis = processMillis;
     }
@@ -1108,9 +1404,6 @@ public class TransactionHistorySequentialExporter {
         return;
       }
 
-      if (result.isTransactionRetFallbackUsed()) {
-        recordTransactionRetFallbackBlock(result.getTransactionCount());
-      }
       recordExportedBlock(result.getExportedTransactions());
 
       TransactionProcessor.BlockProcessingProfile profile = result.getProfile();
@@ -1188,14 +1481,6 @@ public class TransactionHistorySequentialExporter {
 
     long getIncompleteBlocks() {
       return incompleteBlocks;
-    }
-
-    long getTransactionRetFallbackBlocks() {
-      return transactionRetFallbackBlocks;
-    }
-
-    long getTransactionRetFallbackTransactions() {
-      return transactionRetFallbackTransactions;
     }
 
     long getTotalTransactions() {
@@ -1298,8 +1583,6 @@ public class TransactionHistorySequentialExporter {
     private long nonEmptyBlocks;
     private long exportedBlocks;
     private long incompleteBlocks;
-    private long transactionRetFallbackBlocks;
-    private long transactionRetFallbackTransactions;
     private long totalTransactions;
     private long exportedTransactions;
     private long missingTransactions;
@@ -1337,8 +1620,6 @@ public class TransactionHistorySequentialExporter {
       nonEmptyBlocks += bucketStats.getNonEmptyBlocks();
       exportedBlocks += bucketStats.getExportedBlocks();
       incompleteBlocks += bucketStats.getIncompleteBlocks();
-      transactionRetFallbackBlocks += bucketStats.getTransactionRetFallbackBlocks();
-      transactionRetFallbackTransactions += bucketStats.getTransactionRetFallbackTransactions();
       totalTransactions += bucketStats.getTotalTransactions();
       exportedTransactions += bucketStats.getExportedTransactions();
       missingTransactions += bucketStats.getMissingTransactions();
@@ -1367,8 +1648,7 @@ public class TransactionHistorySequentialExporter {
       logger.info("Export summary | processedBuckets={} filteredBuckets={} "
               + "skippedExportedBuckets={} blocks={} emptyBlocks={} "
               + "nonEmptyBlocks={} exportedBlocks={} incompleteBlocks={} txs={} exportedTxs={} "
-              + "retFallbackBlocks={} retFallbackTxs={} missingTx={} txCoverage={} "
-              + "infoCoverage={} shardRecords={} shardBytes={} "
+              + "missingTx={} txCoverage={} infoCoverage={} shardRecords={} shardBytes={} "
               + "load={}ms fetch={}ms process={}ms "
               + "processDetail: index={}ms wait={}ms blockWall={}ms txWall={}ms trigger={}ms "
               + "serialize={}ms emit={}ms kafkaStr={} kafkaBytes={} prefetchHit={} "
@@ -1376,8 +1656,7 @@ public class TransactionHistorySequentialExporter {
           processedBuckets, filteredBuckets, skippedExportedBuckets, blocksFetched,
           emptyBlocks, nonEmptyBlocks,
           exportedBlocks, incompleteBlocks, totalTransactions, exportedTransactions,
-          transactionRetFallbackBlocks, transactionRetFallbackTransactions, missingTransactions,
-          percentage(exportedTransactions, totalTransactions),
+          missingTransactions, percentage(exportedTransactions, totalTransactions),
           percentage(shardRecords, totalTransactions), shardRecords, formatBytes(shardPayloadBytes),
           shardLoadMillis, blockFetchMillis, processMillis,
           nanosToMillis(indexBuildNanos), nanosToMillis(futureWaitNanos),
@@ -1406,36 +1685,33 @@ public class TransactionHistorySequentialExporter {
     private final int missingTransactions;
     private final boolean emptyBlock;
     private final boolean incompleteBlock;
-    private final boolean transactionRetFallbackUsed;
     private final TransactionProcessor.BlockRenderResult renderedBlock;
 
     private BlockExportResult(long blockNum, int transactionCount, int missingTransactions,
-        boolean emptyBlock, boolean incompleteBlock, boolean transactionRetFallbackUsed,
+        boolean emptyBlock, boolean incompleteBlock,
         TransactionProcessor.BlockRenderResult renderedBlock) {
       this.blockNum = blockNum;
       this.transactionCount = transactionCount;
       this.missingTransactions = missingTransactions;
       this.emptyBlock = emptyBlock;
       this.incompleteBlock = incompleteBlock;
-      this.transactionRetFallbackUsed = transactionRetFallbackUsed;
       this.renderedBlock = renderedBlock;
     }
 
     static BlockExportResult empty(long blockNum) {
-      return new BlockExportResult(blockNum, 0, 0, true, false, false, null);
+      return new BlockExportResult(blockNum, 0, 0, true, false, null);
     }
 
     static BlockExportResult incomplete(long blockNum, int transactionCount,
         int missingTransactions) {
       return new BlockExportResult(blockNum, transactionCount, missingTransactions,
-          false, true, false, null);
+          false, true, null);
     }
 
     static BlockExportResult rendered(long blockNum, int transactionCount,
-        boolean transactionRetFallbackUsed,
         TransactionProcessor.BlockRenderResult renderedBlock) {
       return new BlockExportResult(blockNum, transactionCount, 0,
-          false, false, transactionRetFallbackUsed, renderedBlock);
+          false, false, renderedBlock);
     }
 
     long getBlockNum() {
@@ -1463,10 +1739,6 @@ public class TransactionHistorySequentialExporter {
 
     boolean isIncompleteBlock() {
       return incompleteBlock;
-    }
-
-    boolean isTransactionRetFallbackUsed() {
-      return transactionRetFallbackUsed;
     }
 
     boolean hasRenderedBlock() {

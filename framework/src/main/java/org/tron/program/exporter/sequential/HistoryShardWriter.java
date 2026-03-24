@@ -6,8 +6,13 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import org.tron.core.db2.common.WrappedByteArray;
+import org.tron.protos.Protocol.TransactionInfo;
 
 public final class HistoryShardWriter implements Closeable {
 
@@ -42,6 +47,7 @@ public final class HistoryShardWriter implements Closeable {
     for (ExportBucketManifest.Bucket bucket : manifest.getBuckets()) {
       BucketOutput output = outputs.get(bucket.getIndex());
       if (output == null) {
+        deleteIfExists(manifest.resolveShardFile(bucket));
         bucket.markPrepared(0, 0);
         continue;
       }
@@ -76,6 +82,50 @@ public final class HistoryShardWriter implements Closeable {
     return output;
   }
 
+  public static ShardStats rewriteShardFile(File shardFile,
+      Map<Long, Map<WrappedByteArray, TransactionInfo>> infosByBlock) throws IOException {
+    if (infosByBlock == null || infosByBlock.isEmpty()) {
+      deleteIfExists(shardFile);
+      return new ShardStats(0, 0);
+    }
+
+    long recordCount = 0;
+    long serializedBytes = 0;
+    List<Long> blockNums = new ArrayList<>(infosByBlock.keySet());
+    Collections.sort(blockNums);
+
+    try (DataOutputStream stream = new DataOutputStream(new BufferedOutputStream(
+        new FileOutputStream(shardFile, false)))) {
+      for (Long blockNum : blockNums) {
+        Map<WrappedByteArray, TransactionInfo> blockInfos = infosByBlock.get(blockNum);
+        if (blockInfos == null || blockInfos.isEmpty()) {
+          continue;
+        }
+
+        for (Map.Entry<WrappedByteArray, TransactionInfo> entry : blockInfos.entrySet()) {
+          byte[] txId = entry.getKey().getBytes();
+          byte[] payload = entry.getValue().toByteArray();
+          stream.writeLong(blockNum);
+          stream.writeInt(txId.length);
+          stream.write(txId);
+          stream.writeInt(payload.length);
+          stream.write(payload);
+          recordCount++;
+          serializedBytes += txId.length + payload.length + 16L;
+        }
+      }
+      stream.flush();
+    }
+
+    return new ShardStats(recordCount, serializedBytes);
+  }
+
+  private static void deleteIfExists(File shardFile) throws IOException {
+    if (shardFile.exists() && !shardFile.delete()) {
+      throw new IOException("Could not delete shard file: " + shardFile.getAbsolutePath());
+    }
+  }
+
   private static final class BucketOutput {
     private final DataOutputStream stream;
     private long recordCount;
@@ -83,6 +133,24 @@ public final class HistoryShardWriter implements Closeable {
 
     private BucketOutput(DataOutputStream stream) {
       this.stream = stream;
+    }
+  }
+
+  public static final class ShardStats {
+    private final long recordCount;
+    private final long serializedBytes;
+
+    public ShardStats(long recordCount, long serializedBytes) {
+      this.recordCount = recordCount;
+      this.serializedBytes = serializedBytes;
+    }
+
+    public long getRecordCount() {
+      return recordCount;
+    }
+
+    public long getSerializedBytes() {
+      return serializedBytes;
     }
   }
 }

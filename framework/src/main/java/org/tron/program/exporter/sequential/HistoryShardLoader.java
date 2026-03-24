@@ -75,13 +75,17 @@ public final class HistoryShardLoader {
     }
 
     static BucketShardData empty() {
-      return new BucketShardData(Collections.<Long, Map<WrappedByteArray, TransactionInfo>>emptyMap(),
+      return new BucketShardData(new HashMap<Long, Map<WrappedByteArray, TransactionInfo>>(),
           0, 0);
     }
 
     public Map<WrappedByteArray, TransactionInfo> getBlockInfos(long blockNum) {
       Map<WrappedByteArray, TransactionInfo> infos = infosByBlock.get(blockNum);
       return infos == null ? Collections.<WrappedByteArray, TransactionInfo>emptyMap() : infos;
+    }
+
+    public Map<Long, Map<WrappedByteArray, TransactionInfo>> getInfosByBlock() {
+      return infosByBlock;
     }
 
     public long getRecordCount() {

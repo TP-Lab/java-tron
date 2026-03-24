@@ -4,12 +4,14 @@
 
 `TransactionHistorySequentialExporter` 是一个面向**大区间 / 全量历史导出**的只读离线工具。
 
-默认情况下，它以 prepare 生成的 shard 为主，并在需要时回退 `transactionRetStore`：
+默认情况下，它以 prepare 生成的 shard 为唯一输入源；如有需要，可在 prepare 阶段额外顺扫
+`transactionRetStore` 并把整块 `TransactionInfo` 合并进 shard：
 
 1. 顺序扫描 `transactionHistoryStore`
-2. 按块范围将目标 `TransactionInfo` 写入临时 shard 文件
-3. 再按桶回放 `blockStore`
-4. 复用现有 `TransactionProcessor` / `TriggerBuilder` 完成最终导出
+2. 可选地顺序扫描 `transactionRetStore`，补齐 shard 中缺失或不完整的块
+3. 按块范围将目标 `TransactionInfo` 写入临时 shard 文件
+4. 再按桶回放 `blockStore`
+5. 复用现有 `TransactionProcessor` / `TriggerBuilder` 完成最终导出
 
 适用场景：
 
@@ -52,7 +54,7 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 | `-kafka-rate <rate>` | int | `0` | Kafka 速率限制，`0` 表示不限速 |
 | `-threads <count>` | int | CPU 核心数 × 2 | 交易处理线程池大小 |
 | `-keep-temp` | flag | false | 在 `export/all` 成功后保留临时 shard 文件；未全量导完时默认也会保留 |
-| `-prefer-transaction-ret` | flag | false | `export/all` 时优先尝试 `transactionRetStore`，拿不到完整块再回退到 shard |
+| `-prepare-merge-transaction-ret` | flag | false | `prepare/all` 时在扫完 `transactionHistoryStore` 后，再顺扫 `transactionRetStore` 补齐 shard |
 
 ---
 
@@ -60,7 +62,7 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 
 | 阶段 | 说明 |
 |------|------|
-| `prepare` | 只顺序扫描 `transactionHistoryStore`，生成 bucket manifest 和 shard 文件 |
+| `prepare` | 顺序扫描 `transactionHistoryStore` 生成 shard；可选再顺扫 `transactionRetStore` 补齐 shard |
 | `export` | 只读取现有 manifest / shard，按块回放并导出 |
 | `all` | 先 `prepare`，再 `export` |
 
@@ -71,7 +73,7 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 - `export` 阶段要求 `-tmp` 指向已存在的 manifest 目录
 - `export` 阶段会以 `-tmp` 中的 manifest 为基础，只处理与命令行区块范围相交且 `exported=false` 的 bucket
 - `nextExportBlockNum` 是**桶内前缀 checkpoint**：同一个 `-tmp` 目录只支持从当前 checkpoint 向后续跑，不支持跳过未导出的桶内前缀直接导更靠后的子区间
-- `-prefer-transaction-ret` 只影响 `export/all` 阶段的取数顺序；开启后会先尝试 `transactionRetStore`，失败时再回退到 shard
+- `-prepare-merge-transaction-ret` 只影响 `prepare/all`；开启后会在 history shard 生成完后，再顺扫 `transactionRetStore` 合并进 shard
 - 如果 `-tmp` 是旧版本导出器留下的目录，并且已经写入过部分 checkpoint，当前版本会拒绝继续复用；请重新 `prepare` 或使用新的 `-tmp`
 
 ---
@@ -144,6 +146,25 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
 - 把目标区间切成 shard，供后续多次 `export` 复用
 - 适合先确认 `transactionHistoryStore` 覆盖范围，再决定是否直接导出
 
+### 只做 prepare，并合并 `transactionRetStore`
+
+```bash
+java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
+  org.tron.program.TransactionHistorySequentialExporter 5489445 -1 \
+  -c ./main_net_config.conf \
+  -d ./output-directory \
+  -phase prepare \
+  -tmp /data1/export-tmp \
+  -bucket-blocks 1000 \
+  -prepare-merge-transaction-ret
+```
+
+适用场景：
+
+- 已知 `transactionHistoryStore` 覆盖不完整
+- 希望把 `transactionRetStore` 的顺序读优势前移到 prepare
+- 希望 export 阶段只消费 shard，不再按块切 source
+
 ### 基于已有 shard 做 export
 
 ```bash
@@ -153,17 +174,15 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
   -d ./output-directory \
   -phase export \
   -tmp /data1/export-tmp \
-  -fm trigger \
-  -prefer-transaction-ret
+  -fm trigger
 ```
 
 适用场景：
 
 - `prepare` 已完成
-- 需要重复验证导出逻辑、格式或回退到 `transactionRetStore` 的行为
+- 需要重复验证导出逻辑或输出格式
 - 不想重复全扫 `transactionHistoryStore`
 - 需要基于同一个 `-tmp` 目录，从当前 checkpoint 继续向后导出
-- 如果你已经确认当前区间 `transactionRetStore` 更完整或更快，可以加 `-prefer-transaction-ret`
 - 当前实现会按成功窗口追加 checkpoint；若中途失败，重跑会优先从 `checkpoints.log` 中恢复 `nextExportBlockNum`
 - 如果你想先导某个更靠后的独立子区间，请使用新的 `-tmp` 目录重新 `prepare`
 
@@ -177,13 +196,15 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
   -phase all \
   -tmp /data1/export-tmp \
   -bucket-blocks 1000 \
-  -fm trigger
+  -fm trigger \
+  -prepare-merge-transaction-ret
 ```
 
 适用场景：
 
 - 首次跑某个大区间
 - 希望一次完成 shard 准备和最终导出
+- 希望在 prepare 阶段顺便把 `transactionRetStore` 可用数据合并进 shard
 
 ### 导出到 Kafka 并限制速率
 
@@ -219,14 +240,15 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
   -phase all \
   -tmp /data1/export-tmp-11016445 \
   -bucket-blocks 10000 \
-  -fm trigger
+  -fm trigger \
+  -prepare-merge-transaction-ret
 ```
 
 适用场景：
 
 - 已确认 `11016445` 之后 `transactionHistoryStore` 基本无覆盖
-- 需要依赖 `transactionRetStore` 回退补齐导出数据
-- 当前实现要求导出完整性，若 shard 和 `transactionRetStore` 都无法完整覆盖区块，会直接失败退出
+- 需要在 prepare 阶段顺便把 `transactionRetStore` 尽量合并进 shard
+- 建议配合 `-prepare-merge-transaction-ret` 使用；若 prepare 结束后 shard 仍不完整，export 会直接失败退出
 
 ---
 
@@ -234,8 +256,8 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
 
 - 程序以**只读模式**打开数据库，不会修改源数据库。
 - 该工具更适合**大区间 / 全量导出**，不适合很小区间的临时抽样。
-- `prepare` 阶段会顺序扫描整张 `transactionHistoryStore`，耗时取决于全库大小，不只取决于目标区间大小。
-- `export` 阶段会优先使用 prepare 生成的 shard；如果 shard 中缺少某个区块的 `TransactionInfo`，会先尝试从 `transactionRetStore` 读取整块结果，仍不完整时会记录 `incompleteBlocks / missingTx / worstIncompleteBlock` 并**立即失败退出**。
+- `prepare` 阶段会顺序扫描整张 `transactionHistoryStore`；若开启 `-prepare-merge-transaction-ret`，还会顺扫目标范围内的 `transactionRetStore`。
+- `export` 阶段只消费 prepare 生成的 shard；如果 shard 仍缺少某个区块的 `TransactionInfo`，会记录 `incompleteBlocks / missingTx / worstIncompleteBlock` 并**立即失败退出**。
 - `-bucket-blocks` 越大，单桶 shard 越少，但单桶内存占用越高。
 - 若需要重复调试 `export` 阶段，建议显式指定 `-tmp` 并保留 shard。
 - 未指定 `-keep-temp` 时，只有 `export/all` 成功且 manifest 中所有 bucket 都已导完，才会自动删除临时目录；`prepare` 阶段或部分范围导出成功后会保留临时目录以支持续跑。
@@ -263,9 +285,9 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
 
 不会。
 
-- `prepare` 阶段只依赖 `transactionHistoryStore`。
-- `transactionRetStore` 是否连续，不会影响 `prepare` 是否继续，也不会影响 shard 是否生成。
-- `transactionRetStore` 的连续性会影响 `export` 阶段能否在 shard 缺失时补齐整块数据，但不会影响 `prepare` 本身。
+- 默认 `prepare` 只依赖 `transactionHistoryStore`。
+- 即使开启 `-prepare-merge-transaction-ret`，`transactionRetStore` 不连续也只会影响“哪些块能被补进 shard”，不会让 prepare 中断。
+- `transactionRetStore` 的连续性会影响 merge 覆盖率，但不会改变 export 的单来源语义。
 
 ### 现象 3：想确认后续区块是否主要依赖 `transactionRetStore`
 
@@ -366,6 +388,17 @@ Prepare progress | scanned=1000000 matched=152340 skipped=847650 malformed=10
 - 哪个桶命中的记录最多
 - 哪个桶的 shard 最大
 
+#### `Prepare merge summary`
+
+用于看第二遍 `transactionRetStore` 顺扫是否值得：
+
+- `filledBlocks`：原 shard 缺失、被 ret 新增进来的块数
+- `replacedBlocks`：原 shard 不完整、被 ret 整块替换的块数
+- `conflictedBlocks`：原 shard 与 ret 的 txid 集不一致，最终按 ret 覆盖的块数
+- `invalidBlocks`：ret 与真实 block 交易列表不一致、因此被拒绝合并的块数
+- `rewrittenBuckets`：实际被重写的 bucket 数
+- `mergedTxs`：通过 ret 合并进 shard 的交易总数
+
 ### Export 阶段
 
 #### `Export bucket start`
@@ -384,7 +417,6 @@ Prepare progress | scanned=1000000 matched=152340 skipped=847650 malformed=10
 Export bucket [1000000-1009999] | blocks=10000 txs=65231 shardRecords=65190
 | shardBytes=1.42GB load=812ms fetch=37ms process=15420ms
 | emptyBlocks=120 nonEmptyBlocks=9880 exportedBlocks=9880 incompleteBlocks=0
-| retFallbackBlocks=3 retFallbackTxs=41
 | txCoverage=100.00% infoCoverage=99.94% missingTx=0
 | worstIncompleteBlock=-1(0 tx, missing=0)
 ```
@@ -404,8 +436,6 @@ Export bucket [1000000-1009999] | blocks=10000 txs=65231 shardRecords=65190
 | `nonEmptyBlocks` | 非空块数 |
 | `exportedBlocks` | 成功导出的区块数 |
 | `incompleteBlocks` | 成功完成的导出中该值应为 `0`；若遇到不完整区块，导出会直接失败 |
-| `retFallbackBlocks` | 通过 `transactionRetStore` 回退补齐并成功导出的区块数 |
-| `retFallbackTxs` | 这些回退区块对应的交易总数 |
 | `txCoverage` | 实际导出交易数 / 区块总交易数 |
 | `infoCoverage` | shard 命中交易数 / 区块总交易数 |
 | `missingTx` | 成功完成的导出中该值应为 `0`；若存在缺失交易，导出会直接失败 |
@@ -417,24 +447,24 @@ Export bucket [1000000-1009999] | blocks=10000 txs=65231 shardRecords=65190
 
 - 全局 `txCoverage`
 - 全局 `infoCoverage`
-- `transactionRetStore` 回退命中情况
 - 全局 `missingTx`，成功完成的导出中应为 `0`
 - `load / fetch / process` 总体占比
+- `export` 在推进 checkpoint 前会校验本窗口读取到的 block 序列是否连续；若底层返回缺块或乱序，会直接失败退出
 
 #### 导出失败
 
-如果某个区块既无法从 shard 完整恢复，也无法从 `transactionRetStore` 完整补齐，当前实现会立即失败退出，典型日志类似：
+如果某个区块在 prepare 结束后仍然无法从 shard 完整恢复，当前实现会立即失败退出，典型日志类似：
 
 ```text
 TransactionHistorySequentialExporter failed: Incomplete export data for block 12345678:
-missingTx=2 txCount=157. Neither prepared shard nor transactionRetStore can fully cover this block.
+missingTx=2 txCount=157. Prepared shard cannot fully cover this block.
 ```
 
 这表示：
 
 - 当前导出结果若继续执行将不再完整
-- 需要先补齐 `transactionHistoryStore` 或 `transactionRetStore`
-- 或先用 `TransactionRetBackfiller` / `verify` 检查缺口范围
+- 需要重新 `prepare`，必要时加上 `-prepare-merge-transaction-ret`
+- 或先用 `TransactionRetBackfiller` / `verify` 检查 `transactionRetStore` 覆盖情况
 
 ---
 
