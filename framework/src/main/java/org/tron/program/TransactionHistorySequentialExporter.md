@@ -4,7 +4,7 @@
 
 `TransactionHistorySequentialExporter` 是一个面向**大区间 / 全量历史导出**的只读离线工具。
 
-它不依赖 `transactionRetStore`，而是：
+默认情况下，它以 prepare 生成的 shard 为主，并在需要时回退 `transactionRetStore`：
 
 1. 顺序扫描 `transactionHistoryStore`
 2. 按块范围将目标 `TransactionInfo` 写入临时 shard 文件
@@ -52,6 +52,7 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 | `-kafka-rate <rate>` | int | `0` | Kafka 速率限制，`0` 表示不限速 |
 | `-threads <count>` | int | CPU 核心数 × 2 | 交易处理线程池大小 |
 | `-keep-temp` | flag | false | 在 `export/all` 成功后保留临时 shard 文件；未全量导完时默认也会保留 |
+| `-prefer-transaction-ret` | flag | false | `export/all` 时优先尝试 `transactionRetStore`，拿不到完整块再回退到 shard |
 
 ---
 
@@ -70,6 +71,7 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 - `export` 阶段要求 `-tmp` 指向已存在的 manifest 目录
 - `export` 阶段会以 `-tmp` 中的 manifest 为基础，只处理与命令行区块范围相交且 `exported=false` 的 bucket
 - `nextExportBlockNum` 是**桶内前缀 checkpoint**：同一个 `-tmp` 目录只支持从当前 checkpoint 向后续跑，不支持跳过未导出的桶内前缀直接导更靠后的子区间
+- `-prefer-transaction-ret` 只影响 `export/all` 阶段的取数顺序；开启后会先尝试 `transactionRetStore`，失败时再回退到 shard
 - 如果 `-tmp` 是旧版本导出器留下的目录，并且已经写入过部分 checkpoint，当前版本会拒绝继续复用；请重新 `prepare` 或使用新的 `-tmp`
 
 ---
@@ -151,7 +153,8 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
   -d ./output-directory \
   -phase export \
   -tmp /data1/export-tmp \
-  -fm trigger
+  -fm trigger \
+  -prefer-transaction-ret
 ```
 
 适用场景：
@@ -160,6 +163,7 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
 - 需要重复验证导出逻辑、格式或回退到 `transactionRetStore` 的行为
 - 不想重复全扫 `transactionHistoryStore`
 - 需要基于同一个 `-tmp` 目录，从当前 checkpoint 继续向后导出
+- 如果你已经确认当前区间 `transactionRetStore` 更完整或更快，可以加 `-prefer-transaction-ret`
 - 当前实现会按成功窗口追加 checkpoint；若中途失败，重跑会优先从 `checkpoints.log` 中恢复 `nextExportBlockNum`
 - 如果你想先导某个更靠后的独立子区间，请使用新的 `-tmp` 目录重新 `prepare`
 

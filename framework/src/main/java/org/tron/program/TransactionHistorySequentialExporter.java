@@ -81,6 +81,7 @@ public class TransactionHistorySequentialExporter {
     long bucketBlockCount = parseLongArg(args, "-bucket-blocks", DEFAULT_BUCKET_BLOCKS);
     String customTempDir = parseStringArg(args, "-tmp", null);
     boolean keepTemp = hasFlag(args, "-keep-temp");
+    boolean preferTransactionRet = hasFlag(args, "-prefer-transaction-ret");
 
     if (customThreadPoolSize <= 0) {
       customThreadPoolSize = DEFAULT_THREAD_POOL_SIZE;
@@ -163,10 +164,10 @@ public class TransactionHistorySequentialExporter {
       }
 
       logger.info("Sequential export phase={} manifestRange=[{}-{}] requestedRange=[{}-{}] "
-              + "effectiveExportRange=[{}-{}] bucketBlocks={} tempDir={}",
+              + "effectiveExportRange=[{}-{}] bucketBlocks={} preferTransactionRet={} tempDir={}",
           phase.name().toLowerCase(), manifest.getStartBlockNum(), manifest.getEndBlockNum(),
           startBlockNum, endBlockNum, exportStartBlockNum, exportEndBlockNum,
-          manifest.getBucketBlockCount(),
+          manifest.getBucketBlockCount(), preferTransactionRet,
           workingDir.getAbsolutePath());
 
       if (phase == Phase.PREPARE || phase == Phase.ALL) {
@@ -178,7 +179,7 @@ public class TransactionHistorySequentialExporter {
       if (phase == Phase.EXPORT || phase == Phase.ALL) {
         ExportStats exportStats = exportBuckets(chainBaseManager, wallet, kafkaSender, processor,
             stats, manifest, exportStartBlockNum, exportEndBlockNum, outputFormat, useKafka,
-            kafkaTopic, blockConcurrency);
+            kafkaTopic, blockConcurrency, preferTransactionRet);
         exportStats.logSummary();
         stats.logFinal();
       }
@@ -247,7 +248,8 @@ public class TransactionHistorySequentialExporter {
   private static ExportStats exportBuckets(ChainBaseManager chainBaseManager, Wallet wallet,
       KafkaSender kafkaSender, TransactionProcessor processor, ProcessingStats stats,
       ExportBucketManifest manifest, long exportStartBlockNum, long exportEndBlockNum,
-      String outputFormat, boolean useKafka, String kafkaTopic, int blockConcurrency)
+      String outputFormat, boolean useKafka, String kafkaTopic, int blockConcurrency,
+      boolean preferTransactionRet)
       throws Exception {
     logger.info("Export phase started - replay blocks with prepared history shards "
             + "for effective range [{}-{}]", exportStartBlockNum, exportEndBlockNum);
@@ -327,7 +329,7 @@ public class TransactionHistorySequentialExporter {
           final BlockCapsule block = blocks.get(i);
           futures.add(CompletableFuture.supplyAsync(() -> processExportBlock(block,
               shardData.getBlockInfos(block.getNum()), chainBaseManager, wallet, processor,
-              outputFormat, useKafka), processor.getBlockExecutor()));
+              outputFormat, useKafka, preferTransactionRet), processor.getBlockExecutor()));
         }
 
         List<BlockExportResult> windowResults = new ArrayList<>(windowEnd - windowStart);
@@ -515,23 +517,36 @@ public class TransactionHistorySequentialExporter {
   private static BlockExportResult processExportBlock(BlockCapsule block,
       Map<WrappedByteArray, TransactionInfo> blockInfos, ChainBaseManager chainBaseManager,
       Wallet wallet, TransactionProcessor processor, String outputFormat,
-      boolean useKafka) {
+      boolean useKafka, boolean preferTransactionRet) {
     List<TransactionCapsule> transactions = block.getTransactions();
     if (transactions.isEmpty()) {
       return BlockExportResult.empty(block.getNum());
     }
 
-    PreparedBlockRet preparedBlockRet = buildPreparedTransactionRet(block, blockInfos);
     boolean transactionRetFallbackUsed = false;
-    if (!preparedBlockRet.isComplete()) {
-      int missingPreparedTransactions = preparedBlockRet.getMissingTransactionCount();
-      TransactionRetCapsule fallbackRet = readTransactionRetFallback(block, chainBaseManager);
-      if (fallbackRet != null) {
-        preparedBlockRet = PreparedBlockRet.complete(fallbackRet);
+    PreparedBlockRet preparedBlockRet;
+    if (preferTransactionRet) {
+      TransactionRetCapsule preferredRet = readTransactionRetFallback(block, chainBaseManager);
+      if (preferredRet != null) {
+        preparedBlockRet = PreparedBlockRet.complete(preferredRet);
         transactionRetFallbackUsed = true;
-        logger.debug("Use transactionRetStore fallback for block={} missingPreparedTx={} txCount={}",
-            block.getNum(), missingPreparedTransactions,
-            block.getTransactions().size());
+        logger.debug("Prefer transactionRetStore for block={} txCount={}",
+            block.getNum(), block.getTransactions().size());
+      } else {
+        preparedBlockRet = buildPreparedTransactionRet(block, blockInfos);
+      }
+    } else {
+      preparedBlockRet = buildPreparedTransactionRet(block, blockInfos);
+      if (!preparedBlockRet.isComplete()) {
+        int missingPreparedTransactions = preparedBlockRet.getMissingTransactionCount();
+        TransactionRetCapsule fallbackRet = readTransactionRetFallback(block, chainBaseManager);
+        if (fallbackRet != null) {
+          preparedBlockRet = PreparedBlockRet.complete(fallbackRet);
+          transactionRetFallbackUsed = true;
+          logger.debug("Use transactionRetStore fallback for block={} missingPreparedTx={} txCount={}",
+              block.getNum(), missingPreparedTransactions,
+              block.getTransactions().size());
+        }
       }
     }
 
@@ -682,7 +697,7 @@ public class TransactionHistorySequentialExporter {
           || "-kt".equals(args[i]) || "-kafka-rate".equals(args[i]) || "-threads".equals(args[i])
           || "-tmp".equals(args[i]) || "-bucket-blocks".equals(args[i])) {
         i++;
-      } else if ("-keep-temp".equals(args[i])) {
+      } else if ("-keep-temp".equals(args[i]) || "-prefer-transaction-ret".equals(args[i])) {
         // flag only
       } else {
         filteredArgs.add(args[i]);
@@ -770,6 +785,7 @@ public class TransactionHistorySequentialExporter {
     System.out.println("  -kafka-rate <rate>: Kafka rate limit in messages/second");
     System.out.println("  -threads <count>: Transaction processing thread pool size");
     System.out.println("  -keep-temp: Retain shard files after export");
+    System.out.println("  -prefer-transaction-ret: Prefer transactionRetStore over shard data");
     System.out.println("Notes:");
     System.out.println("  - endBlockNum = -1 means export to the latest block in the database");
   }
