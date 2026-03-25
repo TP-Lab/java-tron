@@ -18,11 +18,13 @@ import org.apache.kafka.common.serialization.StringSerializer;
 @Slf4j(topic = "app")
 public class KafkaSender implements Closeable {
 
+  private static final int DEFAULT_MAX_REQUEST_SIZE_BYTES = 1048576;
   private static final ProducerConfigProfile DEFAULT_STRING_PROFILE = ProducerConfigProfile.builder()
       .compressionType("gzip")
       .batchSizeBytes(131072)
       .lingerMs(20)
       .bufferMemoryBytes(134217728L)
+      .maxRequestSizeBytes(DEFAULT_MAX_REQUEST_SIZE_BYTES)
       .acks("1")
       .callbacksEnabled(true)
       .build();
@@ -32,6 +34,7 @@ public class KafkaSender implements Closeable {
       .batchSizeBytes(131072)
       .lingerMs(20)
       .bufferMemoryBytes(134217728L)
+      .maxRequestSizeBytes(DEFAULT_MAX_REQUEST_SIZE_BYTES)
       .acks("1")
       .callbacksEnabled(true)
       .build();
@@ -65,9 +68,10 @@ public class KafkaSender implements Closeable {
       props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
       stringProducer = new KafkaProducer<>(props);
       logger.info("Kafka string producer initialized with brokers: {}, compression={}, "
-              + "batch={}B, linger={}ms, buffer={}B, acks={}, callbacks={}",
+              + "batch={}B, linger={}ms, buffer={}B, maxRequest={}B, acks={}, callbacks={}",
           brokers, stringProfile.getCompressionType(), stringProfile.getBatchSizeBytes(),
           stringProfile.getLingerMs(), stringProfile.getBufferMemoryBytes(),
+          stringProfile.getMaxRequestSizeBytes(),
           stringProfile.getAcks(), stringProfile.isCallbacksEnabled());
       return true;
     } catch (Exception e) {
@@ -94,9 +98,10 @@ public class KafkaSender implements Closeable {
       props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
       bytesProducer = new KafkaProducer<>(props);
       logger.info("Kafka bytes producer initialized with brokers: {}, compression={}, "
-              + "batch={}B, linger={}ms, buffer={}B, acks={}, callbacks={}",
+              + "batch={}B, linger={}ms, buffer={}B, maxRequest={}B, acks={}, callbacks={}",
           brokers, bytesProfile.getCompressionType(), bytesProfile.getBatchSizeBytes(),
           bytesProfile.getLingerMs(), bytesProfile.getBufferMemoryBytes(),
+          bytesProfile.getMaxRequestSizeBytes(),
           bytesProfile.getAcks(), bytesProfile.isCallbacksEnabled());
       return true;
     } catch (Exception e) {
@@ -207,6 +212,7 @@ public class KafkaSender implements Closeable {
     props.put(ProducerConfig.BATCH_SIZE_CONFIG, profile.getBatchSizeBytes());
     props.put(ProducerConfig.LINGER_MS_CONFIG, profile.getLingerMs());
     props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, profile.getBufferMemoryBytes());
+    props.put(ProducerConfig.MAX_REQUEST_SIZE_CONFIG, profile.getMaxRequestSizeBytes());
     props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, profile.getCompressionType());
     return props;
   }
@@ -249,6 +255,7 @@ public class KafkaSender implements Closeable {
     private final int batchSizeBytes;
     private final int lingerMs;
     private final long bufferMemoryBytes;
+    private final int maxRequestSizeBytes;
     private final String acks;
     private final boolean callbacksEnabled;
 
@@ -257,6 +264,7 @@ public class KafkaSender implements Closeable {
       this.batchSizeBytes = builder.batchSizeBytes;
       this.lingerMs = builder.lingerMs;
       this.bufferMemoryBytes = builder.bufferMemoryBytes;
+      this.maxRequestSizeBytes = builder.maxRequestSizeBytes;
       this.acks = builder.acks;
       this.callbacksEnabled = builder.callbacksEnabled;
     }
@@ -281,6 +289,10 @@ public class KafkaSender implements Closeable {
       return bufferMemoryBytes;
     }
 
+    public int getMaxRequestSizeBytes() {
+      return maxRequestSizeBytes;
+    }
+
     public String getAcks() {
       return acks;
     }
@@ -294,6 +306,7 @@ public class KafkaSender implements Closeable {
       private int batchSizeBytes = 131072;
       private int lingerMs = 20;
       private long bufferMemoryBytes = 134217728L;
+      private int maxRequestSizeBytes = DEFAULT_MAX_REQUEST_SIZE_BYTES;
       private String acks = "1";
       private boolean callbacksEnabled = true;
 
@@ -317,6 +330,11 @@ public class KafkaSender implements Closeable {
 
       public Builder bufferMemoryBytes(long bufferMemoryBytes) {
         this.bufferMemoryBytes = bufferMemoryBytes;
+        return this;
+      }
+
+      public Builder maxRequestSizeBytes(int maxRequestSizeBytes) {
+        this.maxRequestSizeBytes = maxRequestSizeBytes;
         return this;
       }
 

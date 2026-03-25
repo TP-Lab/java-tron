@@ -45,6 +45,7 @@ public class TransactionHistorySequentialExporter {
           .batchSizeBytes(524288)
           .lingerMs(50)
           .bufferMemoryBytes(268435456L)
+          .maxRequestSizeBytes(20 * 1024 * 1024)
           .acks("1")
           .callbacksEnabled(true)
           .build();
