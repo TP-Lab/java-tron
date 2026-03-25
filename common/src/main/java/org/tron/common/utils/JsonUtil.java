@@ -5,11 +5,12 @@ import org.springframework.util.StringUtils;
 
 public class JsonUtil {
 
+  private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
   public static final <T> T json2Obj(String jsonString, Class<T> clazz) {
     if (!StringUtils.isEmpty(jsonString) && clazz != null) {
       try {
-        ObjectMapper om = new ObjectMapper();
-        return om.readValue(jsonString, clazz);
+        return OBJECT_MAPPER.readValue(jsonString, clazz);
       } catch (Exception var3) {
         throw new RuntimeException(var3);
       }
@@ -22,9 +23,8 @@ public class JsonUtil {
     if (obj == null) {
       return null;
     } else {
-      ObjectMapper om = new ObjectMapper();
       try {
-        return om.writeValueAsString(obj);
+        return OBJECT_MAPPER.writeValueAsString(obj);
       } catch (Exception var3) {
         throw new RuntimeException(var3);
       }

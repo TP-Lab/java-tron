@@ -1,5 +1,6 @@
 package org.tron.program.exporter;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -26,6 +27,11 @@ import org.tron.protos.contract.SmartContractOuterClass;
  */
 @Slf4j(topic = "app")
 public class TriggerBuilder {
+
+  private static final Method RAW_DATA_GET_AUTHS_COUNT =
+      resolveRawDataMethod("getAuthsCount");
+  private static final Method RAW_DATA_GET_AUTHS =
+      resolveRawDataMethod("getAuths", int.class);
 
   private TriggerBuilder() {
     // Utility class, no instantiation
@@ -109,21 +115,18 @@ public class TriggerBuilder {
       // Note: auths field is rarely used in normal transactions, most permission info is in
       // contract.Permission_id
       try {
-        // Try to access auths field, but don't fail if it's not available
-        java.lang.reflect.Method getAuthsCountMethod =
-            transaction.getRawData().getClass().getMethod("getAuthsCount");
-        int authsCount = (Integer) getAuthsCountMethod.invoke(transaction.getRawData());
+        if (RAW_DATA_GET_AUTHS_COUNT == null || RAW_DATA_GET_AUTHS == null) {
+          throw new NoSuchMethodException("auths accessors are not available");
+        }
+        int authsCount = (Integer) RAW_DATA_GET_AUTHS_COUNT.invoke(transaction.getRawData());
 
         if (authsCount > 0) {
           trigger.getExtMap().put("authsCount", (long) authsCount);
           logger.debug("Transaction {} has {} auths entries",
               trigger.getTransactionId(), authsCount);
 
-          // If auths exist, try to process them
-          java.lang.reflect.Method getAuthsMethod =
-              transaction.getRawData().getClass().getMethod("getAuths", int.class);
           for (int i = 0; i < authsCount; i++) {
-            Object auth = getAuthsMethod.invoke(transaction.getRawData(), i);
+            Object auth = RAW_DATA_GET_AUTHS.invoke(transaction.getRawData(), i);
             trigger.getExtMap().put("auth_" + i + "_exists", 1L);
             logger.debug("Transaction {} - auth_{} exists", trigger.getTransactionId(), i);
           }
@@ -431,6 +434,15 @@ public class TriggerBuilder {
     }
 
     return trigger;
+  }
+
+  private static Method resolveRawDataMethod(String methodName, Class<?>... parameterTypes) {
+    try {
+      return Transaction.raw.class.getMethod(methodName, parameterTypes);
+    } catch (NoSuchMethodException e) {
+      logger.debug("Transaction.raw method {} is not available: {}", methodName, e.getMessage());
+      return null;
+    }
   }
 
   /**

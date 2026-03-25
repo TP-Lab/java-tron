@@ -49,10 +49,13 @@ import org.tron.protos.TransactionLogTriggerProtos;
 @Slf4j(topic = "app")
 public class TransactionProcessor implements Closeable {
 
+  private static final int MIN_ADAPTIVE_TRANSACTION_CHUNK_SIZE = 32;
+  private static final int MAX_PARALLEL_CHUNKS_PER_BLOCK = 4;
   private static final int DEFAULT_TRANSACTION_CHUNK_SIZE = 128;
 
   private final ExecutorService blockExecutor;
   private final ExecutorService transactionExecutor;
+  private final int transactionParallelism;
   private volatile int transactionChunkSize = DEFAULT_TRANSACTION_CHUNK_SIZE;
 
   /**
@@ -66,8 +69,10 @@ public class TransactionProcessor implements Closeable {
     this.blockExecutor = Executors.newFixedThreadPool(blockPoolSize);
     logger.info("Block processing thread pool initialized with {} threads", blockPoolSize);
 
-    this.transactionExecutor = Executors.newFixedThreadPool(threadPoolSize);
-    logger.info("Transaction processing thread pool initialized with {} threads", threadPoolSize);
+    this.transactionParallelism = Math.max(1, threadPoolSize);
+    this.transactionExecutor = Executors.newFixedThreadPool(transactionParallelism);
+    logger.info("Transaction processing thread pool initialized with {} threads",
+        transactionParallelism);
   }
 
   // ========================================================================
@@ -200,7 +205,7 @@ public class TransactionProcessor implements Closeable {
     // ====================================================================
     AtomicInteger processedCount = new AtomicInteger(0);
     final int txCount = transactions.size();
-    int effectiveChunkSize = Math.max(1, Math.min(transactionChunkSize, txCount));
+    int effectiveChunkSize = resolveTransactionChunkSize(txCount);
     List<TransactionOutputRecord> outputRecords = new ArrayList<>();
 
     // 等待所有交易处理完成
@@ -238,6 +243,19 @@ public class TransactionProcessor implements Closeable {
 
     profile.addBlockWallNanos(System.nanoTime() - blockStartTime);
     return new BlockRenderResult(blockNum, transactions.size(), outputRecords, profile);
+  }
+
+  private int resolveTransactionChunkSize(int txCount) {
+    if (txCount <= 1) {
+      return txCount;
+    }
+
+    // Keep medium-sized blocks off the single block thread without exploding task count.
+    int desiredChunks = Math.max(1,
+        Math.min(MAX_PARALLEL_CHUNKS_PER_BLOCK, transactionParallelism));
+    int adaptiveChunkSize = (txCount + desiredChunks - 1) / desiredChunks;
+    int boundedChunkSize = Math.max(MIN_ADAPTIVE_TRANSACTION_CHUNK_SIZE, adaptiveChunkSize);
+    return Math.max(1, Math.min(txCount, Math.min(transactionChunkSize, boundedChunkSize)));
   }
 
   public void emitRenderedBlock(BlockRenderResult renderedBlock, String kafkaTopic,
