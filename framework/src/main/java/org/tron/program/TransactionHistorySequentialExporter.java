@@ -36,8 +36,18 @@ public class TransactionHistorySequentialExporter {
 
   private static final int DEFAULT_THREAD_POOL_SIZE =
       Runtime.getRuntime().availableProcessors() * 2;
+  private static final int DEFAULT_BLOCK_RENDER_WINDOW_SIZE = 32;
   private static final long DEFAULT_BUCKET_BLOCKS = 10_000L;
   private static final long PREPARE_PROGRESS_INTERVAL = 1_000_000L;
+  private static final KafkaSender.ProducerConfigProfile SEQUENTIAL_EXPORT_STRING_KAFKA_PROFILE =
+      KafkaSender.ProducerConfigProfile.builder()
+          .compressionType("lz4")
+          .batchSizeBytes(524288)
+          .lingerMs(50)
+          .bufferMemoryBytes(268435456L)
+          .acks("1")
+          .callbacksEnabled(true)
+          .build();
 
   public static void main(String[] args) {
     logger.info("TransactionHistorySequentialExporter started");
@@ -114,7 +124,8 @@ public class TransactionHistorySequentialExporter {
     }
 
     boolean useKafka = kafkaBrokers != null && kafkaTopic != null;
-    int blockConcurrency = Math.max(8, customThreadPoolSize / 2);
+    int blockConcurrency = Math.max(DEFAULT_BLOCK_RENDER_WINDOW_SIZE,
+        Math.max(8, customThreadPoolSize / 2));
     KafkaSender kafkaSender = new KafkaSender();
     TransactionProcessor processor = new TransactionProcessor(customThreadPoolSize);
     ProcessingStats stats = new ProcessingStats();
@@ -130,7 +141,8 @@ public class TransactionHistorySequentialExporter {
             logger.warn("Failed to initialize Kafka proto producer. Continuing without Kafka.");
             useKafka = false;
           }
-        } else if (!kafkaSender.initStringProducer(kafkaBrokers)) {
+        } else if (!kafkaSender.initStringProducer(kafkaBrokers,
+            SEQUENTIAL_EXPORT_STRING_KAFKA_PROFILE)) {
           logger.warn("Failed to initialize Kafka producer. Continuing without Kafka.");
           useKafka = false;
         }
