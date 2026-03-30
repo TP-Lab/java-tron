@@ -90,6 +90,7 @@ public class TransactionHistorySequentialExporter {
     long bucketBlockCount = parseLongArg(args, "-bucket-blocks", DEFAULT_BUCKET_BLOCKS);
     String customTempDir = parseStringArg(args, "-tmp", null);
     boolean keepTemp = hasFlag(args, "-keep-temp");
+    boolean resetCheckpoint = hasFlag(args, "-reset-checkpoint");
     boolean deprecatedPreferTransactionRet = hasFlag(args, "-prefer-transaction-ret");
     boolean mergeTransactionRetRequested = hasFlag(args, "-prepare-merge-transaction-ret")
         || deprecatedPreferTransactionRet;
@@ -173,6 +174,12 @@ public class TransactionHistorySequentialExporter {
       manifest = phase == Phase.EXPORT
           ? ExportBucketManifest.load(workingDir)
           : ExportBucketManifest.create(workingDir, startBlockNum, endBlockNum, bucketBlockCount);
+
+      if (resetCheckpoint && phase == Phase.EXPORT) {
+        logger.info("Resetting all checkpoints in manifest");
+        manifest.resetCheckpoints();
+        manifest.save();
+      }
 
       if (phase == Phase.EXPORT
           && (manifest.getStartBlockNum() != startBlockNum || manifest.getEndBlockNum() != endBlockNum)) {
@@ -908,7 +915,7 @@ public class TransactionHistorySequentialExporter {
           || "-tmp".equals(args[i]) || "-bucket-blocks".equals(args[i])) {
         i++;
       } else if ("-keep-temp".equals(args[i]) || "-prefer-transaction-ret".equals(args[i])
-          || "-prepare-merge-transaction-ret".equals(args[i])) {
+          || "-prepare-merge-transaction-ret".equals(args[i]) || "-reset-checkpoint".equals(args[i])) {
         // flag only
       } else {
         filteredArgs.add(args[i]);
@@ -996,6 +1003,7 @@ public class TransactionHistorySequentialExporter {
     System.out.println("  -kafka-rate <rate>: Kafka rate limit in messages/second");
     System.out.println("  -threads <count>: Transaction processing thread pool size");
     System.out.println("  -keep-temp: Retain shard files after export");
+    System.out.println("  -reset-checkpoint: Reset export checkpoints to restart from beginning");
     System.out.println("  -prepare-merge-transaction-ret: Merge transactionRetStore into shard "
         + "after scanning transactionHistoryStore");
     System.out.println("Notes:");

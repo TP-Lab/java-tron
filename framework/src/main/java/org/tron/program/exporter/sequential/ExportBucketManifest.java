@@ -177,6 +177,12 @@ public final class ExportBucketManifest implements Closeable {
     writer.flush();
   }
 
+  public void resetCheckpoints() {
+    for (Bucket bucket : buckets) {
+      bucket.resetCheckpoint();
+    }
+  }
+
   @Override
   public void close() throws IOException {
     save();
@@ -350,6 +356,11 @@ public final class ExportBucketManifest implements Closeable {
       this.exported = false;
       this.recordCount = 0;
       this.serializedBytes = 0;
+      this.nextExportBlockNum = startBlockNum;
+    }
+
+    public void resetCheckpoint() {
+      this.exported = false;
       this.nextExportBlockNum = startBlockNum;
     }
 

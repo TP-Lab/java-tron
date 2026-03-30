@@ -54,6 +54,7 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 | `-kafka-rate <rate>` | int | `0` | Kafka 速率限制，`0` 表示不限速 |
 | `-threads <count>` | int | CPU 核心数 × 2 | 交易处理线程池大小 |
 | `-keep-temp` | flag | false | 在 `export/all` 成功后保留临时 shard 文件；未全量导完时默认也会保留 |
+| `-reset-checkpoint` | flag | false | `export` 阶段重置所有 checkpoint，从头开始重新导出 |
 | `-prepare-merge-transaction-ret` | flag | false | `prepare/all` 时在扫完 `transactionHistoryStore` 后，再顺扫 `transactionRetStore` 补齐 shard |
 
 ---
@@ -73,6 +74,7 @@ TransactionHistorySequentialExporter <startBlockNum> -1 [options]
 - `export` 阶段要求 `-tmp` 指向已存在的 manifest 目录
 - `export` 阶段会以 `-tmp` 中的 manifest 为基础，只处理与命令行区块范围相交且 `exported=false` 的 bucket
 - `nextExportBlockNum` 是**桶内前缀 checkpoint**：同一个 `-tmp` 目录只支持从当前 checkpoint 向后续跑，不支持跳过未导出的桶内前缀直接导更靠后的子区间
+- 如需重置 checkpoint 从头重新导出，可使用 `-reset-checkpoint` 参数；该参数只在 `-phase export` 时生效，会保留 shard 文件但重置所有导出进度
 - `-prepare-merge-transaction-ret` 只影响 `prepare/all`；开启后会在 history shard 生成完后，再顺扫 `transactionRetStore` 合并进 shard
 - 如果 `-tmp` 是旧版本导出器留下的目录，并且已经写入过部分 checkpoint，当前版本会拒绝继续复用；请重新 `prepare` 或使用新的 `-tmp`
 
@@ -185,6 +187,26 @@ java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
 - 需要基于同一个 `-tmp` 目录，从当前 checkpoint 继续向后导出
 - 当前实现会按成功窗口追加 checkpoint；若中途失败，重跑会优先从 `checkpoints.log` 中恢复 `nextExportBlockNum`
 - 如果你想先导某个更靠后的独立子区间，请使用新的 `-tmp` 目录重新 `prepare`
+
+### 重置 checkpoint 重新导出
+
+```bash
+java -cp "build/libs/framework-1.0.0.jar:build/libs/FullNode.jar" \
+  org.tron.program.TransactionHistorySequentialExporter 5489445 -1 \
+  -c ./main_net_config.conf \
+  -d ./output-directory \
+  -phase export \
+  -tmp /data1/export-tmp \
+  -fm trigger \
+  -reset-checkpoint
+```
+
+适用场景：
+
+- `prepare` 已完成且 shard 文件正确
+- 需要从头重新导出（例如修改了导出格式或目标系统）
+- 不想删除整个 `-tmp` 目录重新 `prepare`
+- 该参数会重置所有 bucket 的 `exported` 和 `nextExportBlockNum`，但保留 shard 文件
 
 ### 一次跑完整链路：prepare + export
 
