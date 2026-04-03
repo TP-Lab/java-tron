@@ -3,7 +3,9 @@ package org.tron.common.logsfilter;
 import static org.tron.core.config.Parameter.ChainConstant.TRX_PRECISION;
 import static org.tron.protos.contract.Common.ResourceCode.BANDWIDTH;
 
+import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
+import java.util.Arrays;
 import org.bouncycastle.util.encoders.Hex;
 import org.junit.Assert;
 import org.junit.Before;
@@ -215,6 +217,30 @@ public class TransactionLogTriggerCapsuleTest {
   }
 
   @Test
+  public void testTransactionMetadataInitializedForPluginTrigger() {
+    BalanceContract.TransferContract contract = BalanceContract.TransferContract.newBuilder()
+        .setOwnerAddress(ByteString.copyFrom(ByteArray.fromHexString(OWNER_ADDRESS)))
+        .setToAddress(ByteString.copyFrom(ByteArray.fromHexString(RECEIVER_ADDRESS)))
+        .setAmount(TRX_PRECISION + 1)
+        .build();
+    transactionCapsule = createTransactionCapsule(contract,
+        Protocol.Transaction.Contract.ContractType.TransferContract,
+        101L, 202L, 303L);
+
+    TransactionLogTriggerCapsule triggerCapsule =
+        new TransactionLogTriggerCapsule(transactionCapsule, blockCapsule);
+
+    Assert.assertNotNull(triggerCapsule.getTransactionLogTrigger().getTransactionDetail());
+    Assert.assertNotNull(triggerCapsule.getTransactionLogTrigger().getExtMap());
+    Assert.assertEquals(101L,
+        triggerCapsule.getTransactionLogTrigger().getExtMap().get("refBlockNum").longValue());
+    Assert.assertEquals(202L,
+        triggerCapsule.getTransactionLogTrigger().getExtMap().get("expiration").longValue());
+    Assert.assertEquals(303L,
+        triggerCapsule.getTransactionLogTrigger().getExtMap().get("timestamp").longValue());
+  }
+
+  @Test
   public void testConstructorWithTriggerSmartContract() {
     SmartContractOuterClass.TriggerSmartContract.Builder builder2 =
         SmartContractOuterClass.TriggerSmartContract.newBuilder()
@@ -284,6 +310,145 @@ public class TransactionLogTriggerCapsuleTest {
     Assert.assertEquals(StringUtil.encode58Check(Hex.decode(CONTRACT_ADDRESS)),
         trigger.getTransactionLogTrigger().getContractAddress());
     Assert.assertEquals("112233", trigger.getTransactionLogTrigger().getContractResult());
+  }
+
+  @Test
+  public void testExtMapMergesTransactionInfoFields() {
+    BalanceContract.CancelAllUnfreezeV2Contract contract =
+        BalanceContract.CancelAllUnfreezeV2Contract.newBuilder()
+            .setOwnerAddress(ByteString.copyFrom(ByteArray.fromHexString(OWNER_ADDRESS)))
+            .build();
+    transactionCapsule = createTransactionCapsule(contract,
+        Protocol.Transaction.Contract.ContractType.CancelAllUnfreezeV2Contract,
+        11L, 22L, 33L);
+
+    Protocol.TransactionInfo transactionInfo = Protocol.TransactionInfo.newBuilder()
+        .putCancelUnfreezeV2Amount(BANDWIDTH.name(), TRX_PRECISION + 2000)
+        .setWithdrawExpireAmount(44L)
+        .setPackingFee(55L)
+        .build();
+
+    TransactionLogTriggerCapsule triggerCapsule = new TransactionLogTriggerCapsule(
+        transactionCapsule, blockCapsule, 0, 0, 0, transactionInfo, 0);
+
+    Assert.assertEquals(11L,
+        triggerCapsule.getTransactionLogTrigger().getExtMap().get("refBlockNum").longValue());
+    Assert.assertEquals(22L,
+        triggerCapsule.getTransactionLogTrigger().getExtMap().get("expiration").longValue());
+    Assert.assertEquals(33L,
+        triggerCapsule.getTransactionLogTrigger().getExtMap().get("timestamp").longValue());
+    Assert.assertEquals(TRX_PRECISION + 2000,
+        triggerCapsule.getTransactionLogTrigger().getExtMap().get(BANDWIDTH.name()).longValue());
+    Assert.assertEquals(44L,
+        triggerCapsule.getTransactionLogTrigger().getExtMap()
+            .get("withdrawExpireAmount").longValue());
+    Assert.assertEquals(55L,
+        triggerCapsule.getTransactionLogTrigger().getExtMap().get("packingFee").longValue());
+  }
+
+  @Test
+  public void testTransactionInfoFallbackFieldsInitialized() {
+    BalanceContract.TransferContract contract = BalanceContract.TransferContract.newBuilder()
+        .setOwnerAddress(ByteString.copyFrom(ByteArray.fromHexString(OWNER_ADDRESS)))
+        .setToAddress(ByteString.copyFrom(ByteArray.fromHexString(RECEIVER_ADDRESS)))
+        .setAmount(TRX_PRECISION + 9)
+        .build();
+    transactionCapsule = createTransactionCapsule(contract,
+        Protocol.Transaction.Contract.ContractType.TransferContract,
+        9L, 10L, 11L,
+        ByteString.copyFrom("memo".getBytes()),
+        Arrays.asList(ByteString.copyFrom("sig-a".getBytes()),
+            ByteString.copyFrom("sig-b".getBytes())));
+
+    Protocol.InternalTransaction internalTransaction = Protocol.InternalTransaction.newBuilder()
+        .setHash(ByteString.copyFrom(ByteArray.fromHexString("112233")))
+        .setCallerAddress(ByteString.copyFrom(ByteArray.fromHexString(OWNER_ADDRESS)))
+        .setTransferToAddress(ByteString.copyFrom(ByteArray.fromHexString(RECEIVER_ADDRESS)))
+        .addCallValueInfo(Protocol.InternalTransaction.CallValueInfo.newBuilder()
+            .setCallValue(66L)
+            .build())
+        .addCallValueInfo(Protocol.InternalTransaction.CallValueInfo.newBuilder()
+            .setTokenId("1002001")
+            .setCallValue(77L)
+            .build())
+        .setNote(ByteString.copyFrom("note".getBytes()))
+        .setExtra("extra")
+        .setRejected(true)
+        .build();
+
+    Protocol.TransactionInfo transactionInfo = Protocol.TransactionInfo.newBuilder()
+        .setFee(999L)
+        .setResult(Protocol.TransactionInfo.code.FAILED)
+        .setAssetIssueID("123456")
+        .setWithdrawAmount(11L)
+        .setUnfreezeAmount(12L)
+        .setExchangeId(13L)
+        .setExchangeReceivedAmount(14L)
+        .setExchangeInjectAnotherAmount(15L)
+        .setExchangeWithdrawAnotherAmount(16L)
+        .setShieldedTransactionFee(17L)
+        .setPackingFee(18L)
+        .setReceipt(Protocol.ResourceReceipt.newBuilder()
+            .setResult(Protocol.Transaction.Result.contractResult.REVERT)
+            .build())
+        .addInternalTransactions(internalTransaction)
+        .build();
+
+    TransactionLogTriggerCapsule triggerCapsule = new TransactionLogTriggerCapsule(
+        transactionCapsule, blockCapsule, transactionInfo);
+
+    Assert.assertEquals(999L, triggerCapsule.getTransactionLogTrigger().getFee());
+    Assert.assertEquals("REVERT", triggerCapsule.getTransactionLogTrigger().getResult());
+    Assert.assertTrue(triggerCapsule.getTransactionLogTrigger().getTxResult().contains("fee: 999"));
+    Assert.assertTrue(triggerCapsule.getTransactionLogTrigger().getTxResult()
+        .contains("ret: FAILED"));
+    Assert.assertTrue(triggerCapsule.getTransactionLogTrigger().getTxResult()
+        .contains("contractRet: REVERT"));
+    Assert.assertEquals(1_000_000L, triggerCapsule.getTransactionLogTrigger().getMemoFee());
+    Assert.assertEquals(1_000_000L, triggerCapsule.getTransactionLogTrigger().getMultiSignFee());
+    Assert.assertNotNull(triggerCapsule.getTransactionLogTrigger().getInternalTransactionList());
+    Assert.assertEquals(1,
+        triggerCapsule.getTransactionLogTrigger().getInternalTransactionList().size());
+    Assert.assertEquals(66L, triggerCapsule.getTransactionLogTrigger().getInternalTransactionList()
+        .get(0).getCallValue());
+    Assert.assertEquals(77L, triggerCapsule.getTransactionLogTrigger().getInternalTransactionList()
+        .get(0).getTokenInfo().get("1002001").longValue());
+    Assert.assertEquals("note", triggerCapsule.getTransactionLogTrigger()
+        .getInternalTransactionList().get(0).getNote());
+    Assert.assertEquals("extra", triggerCapsule.getTransactionLogTrigger()
+        .getInternalTransactionList().get(0).getExtra());
+    Assert.assertEquals(123456L,
+        triggerCapsule.getTransactionLogTrigger().getExtMap().get("assetIssueID").longValue());
+  }
+
+  private TransactionCapsule createTransactionCapsule(com.google.protobuf.Message contractMessage,
+      Protocol.Transaction.Contract.ContractType contractType,
+      long refBlockNum, long expiration, long timestamp) {
+    return createTransactionCapsule(contractMessage, contractType, refBlockNum, expiration,
+        timestamp, ByteString.EMPTY, null);
+  }
+
+  private TransactionCapsule createTransactionCapsule(com.google.protobuf.Message contractMessage,
+      Protocol.Transaction.Contract.ContractType contractType,
+      long refBlockNum, long expiration, long timestamp,
+      ByteString data, java.util.List<ByteString> signatures) {
+    Protocol.Transaction.raw rawData = Protocol.Transaction.raw.newBuilder()
+        .addContract(Protocol.Transaction.Contract.newBuilder()
+            .setType(contractType)
+            .setParameter(Any.pack(contractMessage))
+            .build())
+        .setRefBlockNum(refBlockNum)
+        .setExpiration(expiration)
+        .setTimestamp(timestamp)
+        .setData(data)
+        .build();
+
+    Protocol.Transaction.Builder transactionBuilder = Protocol.Transaction.newBuilder()
+        .setRawData(rawData);
+    if (signatures != null) {
+      transactionBuilder.addAllSignature(signatures);
+    }
+    return new TransactionCapsule(transactionBuilder.build());
   }
 
 }

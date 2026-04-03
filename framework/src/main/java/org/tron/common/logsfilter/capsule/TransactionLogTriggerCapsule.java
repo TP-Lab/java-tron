@@ -41,12 +41,6 @@ import org.tron.protos.contract.BalanceContract.WithdrawExpireUnfreezeContract;
 import org.tron.protos.contract.SmartContractOuterClass.CreateSmartContract;
 import org.tron.protos.contract.SmartContractOuterClass.TriggerSmartContract;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-
-import static org.tron.protos.Protocol.Transaction.Contract.ContractType.CreateSmartContract;
-
 @Slf4j
 public class TransactionLogTriggerCapsule extends TriggerCapsule {
 
@@ -90,6 +84,7 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
 
     // Extract signatures
     Transaction transaction = trxCapsule.getInstance();
+    populateTransactionMetadata(transaction);
     if (transaction.getSignatureCount() > 0) {
       List<String> signatures = new ArrayList<>();
       for (int i = 0; i < transaction.getSignatureCount(); i++) {
@@ -281,9 +276,6 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
               transactionLogTrigger.setFromAddress(StringUtil
                   .encode58Check(cancelAllUnfreezeV2Contract.getOwnerAddress().toByteArray()));
               transactionLogTrigger.setAssetName("trx");
-              if (Objects.nonNull(transactionInfo)) {
-                transactionLogTrigger.setExtMap(transactionInfo.getCancelUnfreezeV2AmountMap());
-              }
               break;
             default:
               break;
@@ -335,6 +327,8 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       transactionLogTrigger.setInternalTransactionList(
           getInternalTransactionList(programResult.getInternalTransactions()));
     }
+
+    populateTransactionInfoMetadata(transactionInfo);
 
     if (Objects.isNull(trxTrace) && Objects.nonNull(transactionInfo) && isNewEventService) {
       Protocol.ResourceReceipt receipt = transactionInfo.getReceipt();
@@ -398,6 +392,8 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       }
       transactionLogTrigger.setLogList(logPojoList);
     }
+
+    mergeTransactionInfoExtMap(transactionInfo);
   }
 
   public void setLatestSolidifiedBlockNumber(long latestSolidifiedBlockNumber) {
@@ -425,6 +421,195 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
     });
 
     return pojoList;
+  }
+
+  private void populateTransactionMetadata(Transaction transaction) {
+    transactionLogTrigger.setTransactionDetail(transaction.toString());
+    Map<String, Long> extMap = getOrCreateExtMap();
+
+    Transaction.raw rawData = transaction.getRawData();
+    if (Objects.isNull(rawData)) {
+      return;
+    }
+
+    extMap.put("refBlockNum", rawData.getRefBlockNum());
+    extMap.put("expiration", rawData.getExpiration());
+    extMap.put("timestamp", rawData.getTimestamp());
+
+    if (!rawData.getData().isEmpty()) {
+      transactionLogTrigger.setMemoFee(1_000_000L);
+    }
+    if (transaction.getSignatureCount() > 1) {
+      transactionLogTrigger.setMultiSignFee(1_000_000L);
+    }
+  }
+
+  private void mergeTransactionInfoExtMap(TransactionInfo transactionInfo) {
+    if (Objects.isNull(transactionInfo)) {
+      return;
+    }
+
+    Map<String, Long> extMap = getOrCreateExtMap();
+
+    if (!transactionInfo.getAssetIssueID().isEmpty()) {
+      try {
+        extMap.put("assetIssueID", Long.parseLong(transactionInfo.getAssetIssueID()));
+      } catch (NumberFormatException e) {
+        logger.debug("Ignore non-numeric assetIssueID {} for transaction {}",
+            transactionInfo.getAssetIssueID(), transactionLogTrigger.getTransactionId());
+      }
+    }
+
+    if (transactionInfo.getCancelUnfreezeV2AmountCount() > 0) {
+      extMap.putAll(transactionInfo.getCancelUnfreezeV2AmountMap());
+    }
+
+    if (transactionInfo.getWithdrawAmount() > 0) {
+      extMap.put("withdrawAmount", transactionInfo.getWithdrawAmount());
+    }
+
+    if (transactionInfo.getUnfreezeAmount() > 0) {
+      extMap.put("unfreezeAmount", transactionInfo.getUnfreezeAmount());
+    }
+
+    if (transactionInfo.getWithdrawExpireAmount() > 0) {
+      extMap.put("withdrawExpireAmount", transactionInfo.getWithdrawExpireAmount());
+    }
+
+    if (transactionInfo.getExchangeId() > 0) {
+      extMap.put("exchangeId", transactionInfo.getExchangeId());
+    }
+
+    if (transactionInfo.getExchangeReceivedAmount() > 0) {
+      extMap.put("exchangeReceivedAmount", transactionInfo.getExchangeReceivedAmount());
+    }
+
+    if (transactionInfo.getExchangeInjectAnotherAmount() > 0) {
+      extMap.put("exchangeInjectAnotherAmount",
+          transactionInfo.getExchangeInjectAnotherAmount());
+    }
+
+    if (transactionInfo.getExchangeWithdrawAnotherAmount() > 0) {
+      extMap.put("exchangeWithdrawAnotherAmount",
+          transactionInfo.getExchangeWithdrawAnotherAmount());
+    }
+
+    if (transactionInfo.getShieldedTransactionFee() > 0) {
+      extMap.put("shieldedTransactionFee", transactionInfo.getShieldedTransactionFee());
+    }
+
+    if (transactionInfo.getPackingFee() > 0) {
+      extMap.put("packingFee", transactionInfo.getPackingFee());
+    }
+  }
+
+  private void populateTransactionInfoMetadata(TransactionInfo transactionInfo) {
+    if (Objects.isNull(transactionInfo)) {
+      return;
+    }
+
+    if (transactionLogTrigger.getFee() == 0) {
+      transactionLogTrigger.setFee(transactionInfo.getFee());
+    }
+
+    if (transactionLogTrigger.getResult() == null) {
+      Protocol.ResourceReceipt receipt = transactionInfo.getReceipt();
+      if (receipt.getResult() != Transaction.Result.contractResult.DEFAULT) {
+        transactionLogTrigger.setResult(receipt.getResult().toString());
+      } else {
+        transactionLogTrigger.setResult(transactionInfo.getResult() == TransactionInfo.code.SUCESS
+            ? "SUCCESS" : transactionInfo.getResult().toString());
+      }
+    }
+
+    if (transactionLogTrigger.getTxResult() == null) {
+      transactionLogTrigger.setTxResult(buildTxResult(transactionInfo));
+    }
+
+    if (transactionLogTrigger.getInternalTransactionList() == null
+        && transactionInfo.getInternalTransactionsCount() > 0) {
+      transactionLogTrigger.setInternalTransactionList(
+          convertInternalTransactions(transactionInfo.getInternalTransactionsList()));
+    }
+  }
+
+  private String buildTxResult(TransactionInfo transactionInfo) {
+    Transaction.Result.Builder resultBuilder = Transaction.Result.newBuilder()
+        .setFee(transactionInfo.getFee())
+        .setRet(transactionInfo.getResult() == TransactionInfo.code.SUCESS
+            ? Transaction.Result.code.SUCESS : Transaction.Result.code.FAILED);
+
+    Protocol.ResourceReceipt receipt = transactionInfo.getReceipt();
+    if (receipt.getResult() != Transaction.Result.contractResult.DEFAULT) {
+      resultBuilder.setContractRet(receipt.getResult());
+    } else {
+      resultBuilder.setContractRet(Transaction.Result.contractResult.SUCCESS);
+    }
+
+    if (!transactionInfo.getAssetIssueID().isEmpty()) {
+      resultBuilder.setAssetIssueID(transactionInfo.getAssetIssueID());
+    }
+    if (transactionInfo.getWithdrawAmount() > 0) {
+      resultBuilder.setWithdrawAmount(transactionInfo.getWithdrawAmount());
+    }
+    if (transactionInfo.getUnfreezeAmount() > 0) {
+      resultBuilder.setUnfreezeAmount(transactionInfo.getUnfreezeAmount());
+    }
+    if (transactionInfo.getExchangeReceivedAmount() > 0) {
+      resultBuilder.setExchangeReceivedAmount(transactionInfo.getExchangeReceivedAmount());
+    }
+    if (transactionInfo.getExchangeInjectAnotherAmount() > 0) {
+      resultBuilder.setExchangeInjectAnotherAmount(
+          transactionInfo.getExchangeInjectAnotherAmount());
+    }
+    if (transactionInfo.getExchangeWithdrawAnotherAmount() > 0) {
+      resultBuilder.setExchangeWithdrawAnotherAmount(
+          transactionInfo.getExchangeWithdrawAnotherAmount());
+    }
+    if (transactionInfo.getExchangeId() > 0) {
+      resultBuilder.setExchangeId(transactionInfo.getExchangeId());
+    }
+    if (transactionInfo.getShieldedTransactionFee() > 0) {
+      resultBuilder.setShieldedTransactionFee(transactionInfo.getShieldedTransactionFee());
+    }
+
+    return resultBuilder.build().toString();
+  }
+
+  private List<InternalTransactionPojo> convertInternalTransactions(
+      List<Protocol.InternalTransaction> internalTransactions) {
+    List<InternalTransactionPojo> pojoList = new ArrayList<>();
+
+    internalTransactions.forEach(internalTransaction -> {
+      InternalTransactionPojo item = new InternalTransactionPojo();
+      item.setHash(Hex.toHexString(internalTransaction.getHash().toByteArray()));
+      item.setCaller_address(Hex.toHexString(internalTransaction.getCallerAddress().toByteArray()));
+      item.setTransferTo_address(
+          Hex.toHexString(internalTransaction.getTransferToAddress().toByteArray()));
+      item.setRejected(internalTransaction.getRejected());
+      item.setNote(internalTransaction.getNote().toStringUtf8());
+      item.setExtra(internalTransaction.getExtra());
+
+      for (Protocol.InternalTransaction.CallValueInfo callValueInfo
+          : internalTransaction.getCallValueInfoList()) {
+        if (callValueInfo.getTokenId().isEmpty()) {
+          item.setCallValue(callValueInfo.getCallValue());
+        } else {
+          item.getTokenInfo().put(callValueInfo.getTokenId(), callValueInfo.getCallValue());
+        }
+      }
+
+      pojoList.add(item);
+    });
+
+    return pojoList;
+  }
+
+  private Map<String, Long> getOrCreateExtMap() {
+    if (transactionLogTrigger.getExtMap() == null) {
+      transactionLogTrigger.setExtMap(new HashMap<>());
+    }
+    return transactionLogTrigger.getExtMap();
   }
 
   @Override
