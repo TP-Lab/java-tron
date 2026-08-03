@@ -13,6 +13,7 @@ import org.tron.common.utils.Sha256Hash;
 import org.tron.common.utils.StringUtil;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
+import org.tron.core.capsule.TransactionResultCapsule;
 import org.tron.p2p.utils.ByteArray;
 import org.tron.protos.Protocol;
 import org.tron.protos.contract.AssetIssueContractOuterClass;
@@ -207,12 +208,24 @@ public class TransactionLogTriggerCapsuleTest {
             .setToAddress(ByteString.copyFrom(ByteArray.fromHexString(RECEIVER_ADDRESS)));
     transactionCapsule = new TransactionCapsule(builder2.build(),
         Protocol.Transaction.Contract.ContractType.TransferContract);
+    Protocol.Transaction.Result transactionResult = Protocol.Transaction.Result.newBuilder()
+        .setFee(7L)
+        .setRet(Protocol.Transaction.Result.code.SUCESS)
+        .setContractRet(Protocol.Transaction.Result.contractResult.SUCCESS)
+        .build();
+    transactionCapsule.setResult(new TransactionResultCapsule(transactionResult));
 
     TransactionLogTriggerCapsule triggerCapsule =
         new TransactionLogTriggerCapsule(transactionCapsule, blockCapsule);
 
     Assert.assertNotNull(triggerCapsule.getTransactionLogTrigger().getFromAddress());
     Assert.assertNotNull(triggerCapsule.getTransactionLogTrigger().getToAddress());
+    Assert.assertEquals(7L, triggerCapsule.getTransactionLogTrigger().getFee());
+    Assert.assertEquals(transactionResult.toString(),
+        triggerCapsule.getTransactionLogTrigger().getTxResult());
+    Assert.assertEquals(
+        transactionCapsule.getInstance().getRawData().getContract(0).getParameter().toString(),
+        triggerCapsule.getTransactionLogTrigger().getContractData());
   }
 
   @Test
@@ -273,6 +286,8 @@ public class TransactionLogTriggerCapsuleTest {
     resourceBuild.setOriginEnergyUsage(4);
     resourceBuild.setNetFee(5);
     resourceBuild.setNetUsage(6);
+    resourceBuild.setMemoFee(7);
+    resourceBuild.setMultiSignFee(8);
 
     infoBuild
         .setContractAddress(ByteString.copyFrom(ByteArray.fromHexString(CONTRACT_ADDRESS)))
@@ -298,6 +313,8 @@ public class TransactionLogTriggerCapsuleTest {
     Assert.assertEquals(4, trigger.getTransactionLogTrigger().getOriginEnergyUsage());
     Assert.assertEquals(5, trigger.getTransactionLogTrigger().getNetFee());
     Assert.assertEquals(6, trigger.getTransactionLogTrigger().getNetUsage());
+    Assert.assertEquals(7, trigger.getTransactionLogTrigger().getMemoFee());
+    Assert.assertEquals(8, trigger.getTransactionLogTrigger().getMultiSignFee());
 
     Assert.assertEquals(StringUtil.encode58Check(Hex.decode(CONTRACT_ADDRESS)),
         trigger.getTransactionLogTrigger().getContractAddress());

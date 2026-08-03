@@ -35,10 +35,22 @@ public class TransactionLogTrigger extends Trigger {
   @Getter
   @Setter
   private long netFee;
+  @Getter
+  @Setter
+  private long memoFee;
+  @Getter
+  @Setter
+  private long multiSignFee;
+  @Getter
+  @Setter
+  private long fee;
   //contract
   @Getter
   @Setter
   private String result;
+  @Getter
+  @Setter
+  private String txResult;
   @Getter
   @Setter
   private String contractAddress;
@@ -51,6 +63,9 @@ public class TransactionLogTrigger extends Trigger {
   @Getter
   @Setter
   private long contractCallValue;
+  @Getter
+  @Setter
+  private String contractData;
   @Getter
   @Setter
   private String contractResult;

@@ -87,6 +87,11 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
     if (Objects.nonNull(trxCapsule.getContractRet())) {
       transactionLogTrigger.setResult(trxCapsule.getContractRet().toString());
     }
+    if (trxCapsule.getInstance().getRetCount() > 0) {
+      Transaction.Result transactionResult = trxCapsule.getInstance().getRet(0);
+      transactionLogTrigger.setTxResult(transactionResult.toString());
+      transactionLogTrigger.setFee(transactionResult.getFee());
+    }
 
     Transaction.raw rawData = trxCapsule.getInstance().getRawData();
     ContractType contractType = null;
@@ -108,6 +113,7 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
         contractParameter = contract.getParameter();
 
         transactionLogTrigger.setContractCallValue(TransactionCapsule.getCallValue(contract));
+        transactionLogTrigger.setContractData(contractParameter.toString());
       }
 
       if (Objects.nonNull(contractParameter) && Objects.nonNull(contract)) {
@@ -280,6 +286,8 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       transactionLogTrigger.setNetUsage(trxTrace.getReceipt().getNetUsage());
       transactionLogTrigger.setNetFee(trxTrace.getReceipt().getNetFee());
       transactionLogTrigger.setEnergyUsage(trxTrace.getReceipt().getEnergyUsage());
+      transactionLogTrigger.setMemoFee(trxTrace.getReceipt().getMemoFee());
+      transactionLogTrigger.setMultiSignFee(trxTrace.getReceipt().getMultiSignFee());
     }
 
     // program result
@@ -318,6 +326,8 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       transactionLogTrigger.setNetUsage(receipt.getNetUsage());
       transactionLogTrigger.setNetFee(receipt.getNetFee());
       transactionLogTrigger.setEnergyUsage(receipt.getEnergyUsage());
+      transactionLogTrigger.setMemoFee(receipt.getMemoFee());
+      transactionLogTrigger.setMultiSignFee(receipt.getMultiSignFee());
 
       if (transactionInfo.getContractResultCount() > 0) {
         ByteString contractResult = transactionInfo.getContractResult(0);

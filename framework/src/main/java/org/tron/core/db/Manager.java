@@ -1121,6 +1121,8 @@ public class Manager {
       throw e;
     }
 
+    logForkDetails(binaryTree.getKey(), binaryTree.getValue());
+
     if (CollectionUtils.isNotEmpty(binaryTree.getValue())) {
       while (!getDynamicPropertiesStore()
           .getLatestBlockHeaderHash()
@@ -2297,6 +2299,56 @@ public class Manager {
     } else {
       for (TransactionCapsule e : newBlock.getTransactions()) {
         postTransactionTrigger(e, newBlock, removed);
+      }
+    }
+  }
+
+  private List<KhaosBlock> normalizeForkBranchForLogging(List<KhaosBlock> branch) {
+    List<KhaosBlock> normalizedBranch = new ArrayList<>(branch);
+    Collections.reverse(normalizedBranch);
+    return normalizedBranch;
+  }
+
+  private void logForkDetails(List<KhaosBlock> newBranch, List<KhaosBlock> oldBranch) {
+    List<KhaosBlock> normalizedNewBranch = normalizeForkBranchForLogging(newBranch);
+    List<KhaosBlock> normalizedOldBranch = normalizeForkBranchForLogging(oldBranch);
+
+    logger.info(
+        "Switch fork details, oldBranch={}, newBranch={}, oldBlockCount={}, newBlockCount={}",
+        formatForkBranchRange(normalizedOldBranch),
+        formatForkBranchRange(normalizedNewBranch),
+        normalizedOldBranch.size(),
+        normalizedNewBranch.size());
+    logForkTransactionDetails("old", true, normalizedOldBranch);
+    logForkTransactionDetails("new", false, normalizedNewBranch);
+  }
+
+  private String formatForkBranchRange(List<KhaosBlock> branch) {
+    if (branch.isEmpty()) {
+      return "empty";
+    }
+
+    BlockCapsule firstBlock = branch.get(0).getBlk();
+    BlockCapsule lastBlock = branch.get(branch.size() - 1).getBlk();
+    return String.format("[%d:%s -> %d:%s]", firstBlock.getNum(), firstBlock.getBlockId(),
+        lastBlock.getNum(), lastBlock.getBlockId());
+  }
+
+  private void logForkTransactionDetails(String branchName, boolean removed,
+      List<KhaosBlock> branch) {
+    for (KhaosBlock khaosBlock : branch) {
+      BlockCapsule block = khaosBlock.getBlk();
+      logger.info(
+          "Fork block detail, branch={}, removed={}, blockNum={}, blockHash={}, parentHash={}, "
+              + "transactionCount={}",
+          branchName, removed, block.getNum(), block.getBlockId(), block.getParentHash(),
+          block.getTransactions().size());
+      for (int i = 0; i < block.getTransactions().size(); i++) {
+        logger.info(
+            "Fork transaction detail, branch={}, removed={}, blockNum={}, blockHash={}, "
+                + "transactionIndex={}, transactionId={}",
+            branchName, removed, block.getNum(), block.getBlockId(), i,
+            block.getTransactions().get(i).getTransactionId());
       }
     }
   }
