@@ -326,8 +326,9 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
       transactionLogTrigger.setNetUsage(receipt.getNetUsage());
       transactionLogTrigger.setNetFee(receipt.getNetFee());
       transactionLogTrigger.setEnergyUsage(receipt.getEnergyUsage());
-      transactionLogTrigger.setMemoFee(receipt.getMemoFee());
-      transactionLogTrigger.setMultiSignFee(receipt.getMultiSignFee());
+
+      // memoFee and multiSignFee only exist in the in-memory ReceiptCapsule. Keep their
+      // default values when falling back to persisted TransactionInfo data.
 
       if (transactionInfo.getContractResultCount() > 0) {
         ByteString contractResult = transactionInfo.getContractResult(0);

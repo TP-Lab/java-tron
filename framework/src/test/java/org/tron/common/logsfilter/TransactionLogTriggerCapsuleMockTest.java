@@ -67,6 +67,8 @@ public class TransactionLogTriggerCapsuleMockTest {
 
     TransactionTrace trace = mock(TransactionTrace.class);
     ReceiptCapsule receiptCapsule = new ReceiptCapsule(Sha256Hash.ZERO_HASH);
+    receiptCapsule.setMemoFee(7L);
+    receiptCapsule.setMultiSignFee(8L);
     RuntimeImpl runtime = mock(RuntimeImpl.class);
     List<Protocol.TransactionInfo.Log> logs = new ArrayList<>();
     logs.add(Protocol.TransactionInfo.Log.newBuilder()
@@ -94,6 +96,8 @@ public class TransactionLogTriggerCapsuleMockTest {
         builder.build(),0);
 
     Assert.assertNotNull(triggerCapsule.getTransactionLogTrigger());
+    Assert.assertEquals(7L, triggerCapsule.getTransactionLogTrigger().getMemoFee());
+    Assert.assertEquals(8L, triggerCapsule.getTransactionLogTrigger().getMultiSignFee());
   }
 
   @Test

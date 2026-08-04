@@ -286,8 +286,6 @@ public class TransactionLogTriggerCapsuleTest {
     resourceBuild.setOriginEnergyUsage(4);
     resourceBuild.setNetFee(5);
     resourceBuild.setNetUsage(6);
-    resourceBuild.setMemoFee(7);
-    resourceBuild.setMultiSignFee(8);
 
     infoBuild
         .setContractAddress(ByteString.copyFrom(ByteArray.fromHexString(CONTRACT_ADDRESS)))
@@ -313,8 +311,8 @@ public class TransactionLogTriggerCapsuleTest {
     Assert.assertEquals(4, trigger.getTransactionLogTrigger().getOriginEnergyUsage());
     Assert.assertEquals(5, trigger.getTransactionLogTrigger().getNetFee());
     Assert.assertEquals(6, trigger.getTransactionLogTrigger().getNetUsage());
-    Assert.assertEquals(7, trigger.getTransactionLogTrigger().getMemoFee());
-    Assert.assertEquals(8, trigger.getTransactionLogTrigger().getMultiSignFee());
+    Assert.assertEquals(0, trigger.getTransactionLogTrigger().getMemoFee());
+    Assert.assertEquals(0, trigger.getTransactionLogTrigger().getMultiSignFee());
 
     Assert.assertEquals(StringUtil.encode58Check(Hex.decode(CONTRACT_ADDRESS)),
         trigger.getTransactionLogTrigger().getContractAddress());
