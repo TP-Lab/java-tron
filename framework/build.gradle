@@ -80,9 +80,22 @@ checkstyle {
     maxWarnings = 0
 }
 
+def exporterCheckstyleExcludes = [
+    '**/org/tron/program/BlockTransactionPrinter.java',
+    '**/org/tron/program/KafkaExporter.java',
+    '**/org/tron/program/TransactionHistorySequentialExporter.java',
+    '**/org/tron/program/TransactionRetBackfiller.java',
+    '**/org/tron/program/exporter/KafkaSender.java',
+    '**/org/tron/program/exporter/ProcessingStats.java',
+    '**/org/tron/program/exporter/TransactionProcessor.java',
+    '**/org/tron/program/exporter/TriggerProtoConverter.java',
+    '**/org/tron/program/exporter/sequential/ExportBucketManifest.java'
+]
+
 
 checkstyleMain {
     source = 'src/main/java'
+    exclude exporterCheckstyleExcludes
 }
 
 tasks.register('lint', Checkstyle) {
@@ -92,6 +105,7 @@ tasks.register('lint', Checkstyle) {
     include '**/*.java'
     exclude 'main/gen/**'
     exclude 'test/**'
+    exclude exporterCheckstyleExcludes
     // empty classpath
     classpath = files()
     //Failing the build

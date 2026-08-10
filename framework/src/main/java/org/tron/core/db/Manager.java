@@ -2267,7 +2267,8 @@ public class Manager {
     List<TransactionCapsule> transactionCapsuleList = newBlock.getTransactions();
 
     FilterQuery filterQuery = EventPluginLoader.getInstance().getFilterQuery();
-    if (Objects.nonNull(filterQuery) && filterQuery.getFromBlock() != FilterQuery.EARLIEST_BLOCK_NUM) {
+    if (Objects.nonNull(filterQuery)
+        && filterQuery.getFromBlock() != FilterQuery.EARLIEST_BLOCK_NUM) {
       if (newBlock.getNum() < filterQuery.getFromBlock()) {
         return;
       }
