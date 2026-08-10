@@ -6,8 +6,6 @@ import java.util.Map;
 import lombok.Getter;
 import lombok.Setter;
 
-import java.util.List;
-
 public class TransactionLogTrigger extends Trigger {
 
   @Getter
@@ -120,6 +118,12 @@ public class TransactionLogTrigger extends Trigger {
   @Getter
   @Setter
   private Map<String, Long> extMap;
+
+  // true when this transaction is being rolled back due to a chain reorg (fork switch);
+  // mirrors the Ethereum log "removed" semantics already used by ContractTrigger.
+  @Getter
+  @Setter
+  private boolean removed;
 
   public TransactionLogTrigger() {
     setTriggerName(Trigger.TRANSACTION_TRIGGER_NAME);

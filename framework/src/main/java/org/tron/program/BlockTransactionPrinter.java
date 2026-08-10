@@ -22,7 +22,6 @@ import org.tron.common.utils.JsonUtil;
 import org.tron.common.utils.Property;
 import org.tron.common.utils.Sha256Hash;
 import org.tron.core.ChainBaseManager;
-import org.tron.core.Constant;
 import org.tron.core.Wallet;
 import org.tron.core.config.args.Storage;
 import org.tron.core.capsule.BlockCapsule;
@@ -432,13 +431,12 @@ public class BlockTransactionPrinter {
     CommonParameter.getInstance().setJsonRpcHttpPBFTNodeEnable(false);
     CommonParameter.getInstance().setEventSubscribe(false);
     CommonParameter.getInstance().setNodeMetricsEnable(false);
-    CommonParameter.getInstance().setMetricsStorageEnable(false);
     CommonParameter.getInstance().setMetricsPrometheusEnable(false);
 
     System.setProperty("database.readonly", "true");
     System.setProperty("storage.readonly", "true");
 
-    Args.setParam(configArgs, Constant.TESTNET_CONF);
+    Args.setParam(configArgs, "config.conf");
 
     if (Args.getInstance().getStorage() != null) {
       Args.getInstance().getStorage().setDbSync(false);

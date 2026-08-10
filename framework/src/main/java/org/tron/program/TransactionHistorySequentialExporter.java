@@ -11,7 +11,6 @@ import org.tron.common.application.TronApplicationContext;
 import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
 import org.tron.core.ChainBaseManager;
-import org.tron.core.Constant;
 import org.tron.core.Wallet;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
@@ -779,13 +778,12 @@ public class TransactionHistorySequentialExporter {
     CommonParameter.getInstance().setJsonRpcHttpPBFTNodeEnable(false);
     CommonParameter.getInstance().setEventSubscribe(false);
     CommonParameter.getInstance().setNodeMetricsEnable(false);
-    CommonParameter.getInstance().setMetricsStorageEnable(false);
     CommonParameter.getInstance().setMetricsPrometheusEnable(false);
 
     System.setProperty("database.readonly", "true");
     System.setProperty("storage.readonly", "true");
 
-    Args.setParam(configArgs, Constant.TESTNET_CONF);
+    Args.setParam(configArgs, "config.conf");
 
     String databasePath = Args.getInstance().getOutputDirectory();
     File dbDir = new File(databasePath);

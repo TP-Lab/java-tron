@@ -25,7 +25,6 @@ import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
 import org.tron.common.utils.Sha256Hash;
 import org.tron.core.ChainBaseManager;
-import org.tron.core.Constant;
 import org.tron.core.Wallet;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
@@ -495,7 +494,7 @@ public class KafkaExporter {
     }
 
     private static void logDatabaseInfo(ChainBaseManager chainBaseManager, long from, long to) {
-        String configFile = Args.getInstance().getShellConfFileName();
+        String configFile = Args.getConfigFilePath();
         if (StringUtils.isBlank(configFile)) {
             log.info("Config file: <default>");
         } else {
@@ -508,12 +507,9 @@ public class KafkaExporter {
         log.info("Output directory: {}", outputDirectory);
         if (Args.getInstance().getStorage() != null) {
             String dbDirectory = Args.getInstance().getStorage().getDbDirectory();
-            String indexDirectory = Args.getInstance().getStorage().getIndexDirectory();
             log.info("Storage db directory: {}", dbDirectory);
-            log.info("Storage index directory: {}", indexDirectory);
             log.info("Storage db engine: {}", Args.getInstance().getStorage().getDbEngine());
             log.info("Resolved db path: {}", resolveStoragePath(outputDirectory, dbDirectory));
-            log.info("Resolved index path: {}", resolveStoragePath(outputDirectory, indexDirectory));
         } else {
             log.warn("Storage config not initialized.");
         }
@@ -559,14 +555,13 @@ public class KafkaExporter {
         parameter.setJsonRpcHttpPBFTNodeEnable(false);
         parameter.setEventSubscribe(false);
         parameter.setNodeMetricsEnable(false);
-        parameter.setMetricsStorageEnable(false);
         parameter.setMetricsPrometheusEnable(false);
 
         System.setProperty("database.readonly", "true");
         System.setProperty("storage.readonly", "true");
 
         // Setup args
-        Args.setParam(new String[]{"-c", config.configFile}, Constant.TESTNET_CONF);
+        Args.setParam(new String[]{"-c", config.configFile}, "config.conf");
         normalizeStorageDirectories();
 
         if (Args.getInstance().getStorage() != null) {
@@ -617,14 +612,12 @@ public class KafkaExporter {
         }
 
         String dbDirectory = normalizePath(Args.getInstance().getStorage().getDbDirectory());
-        String indexDirectory = normalizePath(Args.getInstance().getStorage().getIndexDirectory());
         Args.getInstance().getStorage().setDbDirectory(dbDirectory);
-        Args.getInstance().getStorage().setIndexDirectory(indexDirectory);
 
         String rawOutputDirectory = Args.getInstance().outputDirectory;
         boolean outputDirectoryDefault = StringUtils.isBlank(rawOutputDirectory)
                 || "output-directory".equals(rawOutputDirectory);
-        if (outputDirectoryDefault && (isAbsolutePath(dbDirectory) || isAbsolutePath(indexDirectory))) {
+        if (outputDirectoryDefault && isAbsolutePath(dbDirectory)) {
             Args.getInstance().outputDirectory = "";
             log.info("Output directory cleared because storage directory is absolute.");
         }

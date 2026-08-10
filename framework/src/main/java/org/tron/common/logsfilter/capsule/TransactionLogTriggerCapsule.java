@@ -23,7 +23,6 @@ import org.tron.common.runtime.ProgramResult;
 import org.tron.common.utils.StringUtil;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
-import org.tron.core.capsule.TransactionResultCapsule;
 import org.tron.core.db.TransactionTrace;
 import org.tron.protos.Protocol;
 import org.tron.protos.Protocol.Transaction;
@@ -99,12 +98,10 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
     if (Objects.nonNull(trxCapsule.getContractRet())) {
       transactionLogTrigger.setResult(trxCapsule.getContractRet().toString());
     }
-    if (Objects.nonNull(trxTrace) && Objects.nonNull(trxTrace.getTransactionContext()) && Objects.nonNull(trxTrace.getTransactionContext().getProgramResult())){
-      TransactionResultCapsule ret = trxTrace.getTransactionContext().getProgramResult().getRet();
-      if (Objects.nonNull(ret)){
-        transactionLogTrigger.setTxResult(ret.getTransactionResult().toString());
-        transactionLogTrigger.setFee(ret.getFee());
-      }
+    if (trxCapsule.getInstance().getRetCount() > 0) {
+      Transaction.Result transactionResult = trxCapsule.getInstance().getRet(0);
+      transactionLogTrigger.setTxResult(transactionResult.toString());
+      transactionLogTrigger.setFee(transactionResult.getFee());
     }
 
     Transaction.raw rawData = trxCapsule.getInstance().getRawData();
@@ -400,6 +397,10 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
     transactionLogTrigger.setLatestSolidifiedBlockNumber(latestSolidifiedBlockNumber);
   }
 
+  public void setRemoved(boolean removed) {
+    transactionLogTrigger.setRemoved(removed);
+  }
+
   private List<InternalTransactionPojo> getInternalTransactionList(
       List<InternalTransaction> internalTransactionList) {
     List<InternalTransactionPojo> pojoList = new ArrayList<>();
@@ -435,13 +436,6 @@ public class TransactionLogTriggerCapsule extends TriggerCapsule {
     extMap.put("refBlockNum", rawData.getRefBlockNum());
     extMap.put("expiration", rawData.getExpiration());
     extMap.put("timestamp", rawData.getTimestamp());
-
-    if (!rawData.getData().isEmpty()) {
-      transactionLogTrigger.setMemoFee(1_000_000L);
-    }
-    if (transaction.getSignatureCount() > 1) {
-      transactionLogTrigger.setMultiSignFee(1_000_000L);
-    }
   }
 
   private void mergeTransactionInfoExtMap(TransactionInfo transactionInfo) {

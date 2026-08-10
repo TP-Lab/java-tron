@@ -13,7 +13,6 @@ import org.tron.common.application.TronApplicationContext;
 import org.tron.common.parameter.CommonParameter;
 import org.tron.common.utils.ByteArray;
 import org.tron.core.ChainBaseManager;
-import org.tron.core.Constant;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
 import org.tron.core.capsule.TransactionInfoCapsule;
@@ -328,10 +327,9 @@ public class TransactionRetBackfiller {
     parameter.setJsonRpcHttpPBFTNodeEnable(false);
     parameter.setEventSubscribe(false);
     parameter.setNodeMetricsEnable(false);
-    parameter.setMetricsStorageEnable(false);
     parameter.setMetricsPrometheusEnable(false);
 
-    Args.setParam(configArgs, Constant.TESTNET_CONF);
+    Args.setParam(configArgs, "config.conf");
 
     String databasePath = Args.getInstance().getOutputDirectory();
     logger.info("Database directory: {}", databasePath);

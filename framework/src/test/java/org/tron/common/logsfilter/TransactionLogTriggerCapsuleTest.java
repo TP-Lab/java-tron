@@ -15,6 +15,7 @@ import org.tron.common.utils.Sha256Hash;
 import org.tron.common.utils.StringUtil;
 import org.tron.core.capsule.BlockCapsule;
 import org.tron.core.capsule.TransactionCapsule;
+import org.tron.core.capsule.TransactionResultCapsule;
 import org.tron.p2p.utils.ByteArray;
 import org.tron.protos.Protocol;
 import org.tron.protos.contract.AssetIssueContractOuterClass;
@@ -35,6 +36,24 @@ public class TransactionLogTriggerCapsuleTest {
   public void setup() {
     blockCapsule = new BlockCapsule(1, Sha256Hash.ZERO_HASH,
         System.currentTimeMillis(), Sha256Hash.ZERO_HASH.getByteString());
+  }
+
+  @Test
+  public void testSetRemoved() {
+    BalanceContract.TransferContract.Builder builder =
+        BalanceContract.TransferContract.newBuilder()
+        .setOwnerAddress(ByteString.copyFrom(ByteArray.fromHexString(OWNER_ADDRESS)))
+        .setToAddress(ByteString.copyFrom(ByteArray.fromHexString(RECEIVER_ADDRESS)))
+        .setAmount(1000L);
+    transactionCapsule = new TransactionCapsule(builder.build(),
+        Protocol.Transaction.Contract.ContractType.TransferContract);
+    TransactionLogTriggerCapsule triggerCapsule =
+        new TransactionLogTriggerCapsule(transactionCapsule, blockCapsule);
+
+    // default is false (forward emit); reorg rollback sets it to true
+    Assert.assertFalse(triggerCapsule.getTransactionLogTrigger().isRemoved());
+    triggerCapsule.setRemoved(true);
+    Assert.assertTrue(triggerCapsule.getTransactionLogTrigger().isRemoved());
   }
 
   @Test
@@ -191,12 +210,21 @@ public class TransactionLogTriggerCapsuleTest {
             .setToAddress(ByteString.copyFrom(ByteArray.fromHexString(RECEIVER_ADDRESS)));
     transactionCapsule = new TransactionCapsule(builder2.build(),
         Protocol.Transaction.Contract.ContractType.TransferContract);
+    Protocol.Transaction.Result transactionResult = Protocol.Transaction.Result.newBuilder()
+        .setFee(7L)
+        .setRet(Protocol.Transaction.Result.code.SUCESS)
+        .setContractRet(Protocol.Transaction.Result.contractResult.SUCCESS)
+        .build();
+    transactionCapsule.setResult(new TransactionResultCapsule(transactionResult));
 
     TransactionLogTriggerCapsule triggerCapsule =
         new TransactionLogTriggerCapsule(transactionCapsule, blockCapsule);
 
     Assert.assertNotNull(triggerCapsule.getTransactionLogTrigger().getFromAddress());
     Assert.assertNotNull(triggerCapsule.getTransactionLogTrigger().getToAddress());
+    Assert.assertEquals(7L, triggerCapsule.getTransactionLogTrigger().getFee());
+    Assert.assertEquals(transactionResult.toString(),
+        triggerCapsule.getTransactionLogTrigger().getTxResult());
   }
 
   @Test
@@ -404,8 +432,8 @@ public class TransactionLogTriggerCapsuleTest {
         .contains("ret: FAILED"));
     Assert.assertTrue(triggerCapsule.getTransactionLogTrigger().getTxResult()
         .contains("contractRet: REVERT"));
-    Assert.assertEquals(1_000_000L, triggerCapsule.getTransactionLogTrigger().getMemoFee());
-    Assert.assertEquals(1_000_000L, triggerCapsule.getTransactionLogTrigger().getMultiSignFee());
+    Assert.assertEquals(0L, triggerCapsule.getTransactionLogTrigger().getMemoFee());
+    Assert.assertEquals(0L, triggerCapsule.getTransactionLogTrigger().getMultiSignFee());
     Assert.assertNotNull(triggerCapsule.getTransactionLogTrigger().getInternalTransactionList());
     Assert.assertEquals(1,
         triggerCapsule.getTransactionLogTrigger().getInternalTransactionList().size());
