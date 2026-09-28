@@ -282,11 +282,13 @@ public class TriggerBuilder {
           InternalTransactionPojo pojo = new InternalTransactionPojo();
           pojo.setHash(Hex.toHexString(internalTx.getHash().toByteArray()));
 
-          // Handle CallValueInfo
-          if (internalTx.getCallValueInfoCount() > 0) {
-            InternalTransaction.CallValueInfo callValueInfo = internalTx.getCallValueInfo(0);
-            pojo.setCallValue(callValueInfo.getCallValue());
-            if (!callValueInfo.getTokenId().isEmpty()) {
+          // Handle all CallValueInfo entries: TRX has an empty token id and
+          // token transfers follow as separate entries.
+          for (InternalTransaction.CallValueInfo callValueInfo
+              : internalTx.getCallValueInfoList()) {
+            if (callValueInfo.getTokenId().isEmpty()) {
+              pojo.setCallValue(callValueInfo.getCallValue());
+            } else {
               pojo.getTokenInfo().put(callValueInfo.getTokenId(), callValueInfo.getCallValue());
             }
           }
@@ -298,7 +300,7 @@ public class TriggerBuilder {
 
           // Handle extra data
           if (!internalTx.getExtra().isEmpty()) {
-            pojo.setData(internalTx.getExtra());
+            pojo.setExtra(internalTx.getExtra());
           }
 
           pojo.setRejected(internalTx.getRejected());
