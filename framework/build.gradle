@@ -84,6 +84,7 @@ def exporterCheckstyleExcludes = [
     '**/org/tron/program/BlockTransactionPrinter.java',
     '**/org/tron/program/KafkaExporter.java',
     '**/org/tron/program/TransactionHistorySequentialExporter.java',
+    '**/org/tron/program/BlockHeaderHistoryExporter.java',
     '**/org/tron/program/TransactionRetBackfiller.java',
     '**/org/tron/program/exporter/KafkaSender.java',
     '**/org/tron/program/exporter/ProcessingStats.java',
