@@ -1,5 +1,7 @@
 package org.tron.program.exporter;
 
+import com.google.protobuf.Any;
+import com.google.protobuf.ByteString;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -19,7 +21,14 @@ import org.tron.protos.Protocol.ResourceReceipt;
 import org.tron.protos.Protocol.Transaction;
 import org.tron.protos.Protocol.TransactionInfo;
 import org.tron.protos.contract.AssetIssueContractOuterClass;
+import org.tron.protos.contract.BalanceContract.CancelAllUnfreezeV2Contract;
+import org.tron.protos.contract.BalanceContract.DelegateResourceContract;
+import org.tron.protos.contract.BalanceContract.FreezeBalanceV2Contract;
 import org.tron.protos.contract.BalanceContract.TransferContract;
+import org.tron.protos.contract.BalanceContract.UnDelegateResourceContract;
+import org.tron.protos.contract.BalanceContract.UnfreezeBalanceContract;
+import org.tron.protos.contract.BalanceContract.UnfreezeBalanceV2Contract;
+import org.tron.protos.contract.BalanceContract.WithdrawExpireUnfreezeContract;
 import org.tron.protos.contract.SmartContractOuterClass;
 
 /**
@@ -152,8 +161,8 @@ public class TriggerBuilder {
               trigger.getTransactionId(), contract.getPermissionId());
         }
 
-        // Extract transfer information for transfer contracts
-        extractTransferInfo(trigger, contract);
+        // from / to / asset fields, same as the live event plugin
+        extractTransferInfo(trigger, contract, transactionInfo);
       }
     }
 
@@ -448,75 +457,129 @@ public class TriggerBuilder {
   }
 
   /**
-   * Extract call value from contract.
+   * Extract call value from contract. Delegates to the live event plugin's
+   * TransactionCapsule.getCallValue: TriggerSmartContract.call_value and
+   * CreateSmartContract.new_contract.call_value, 0 for every other type
+   * (TransferContract's amount goes to assetAmount, not here).
    */
   public static long getCallValue(Transaction.Contract contract) {
-    try {
-      switch (contract.getType()) {
-        case TransferContract:
-          TransferContract transferContract =
-              contract.getParameter().unpack(TransferContract.class);
-          return transferContract.getAmount();
-        case TriggerSmartContract:
-          SmartContractOuterClass.TriggerSmartContract triggerContract =
-              contract.getParameter().unpack(
-                  SmartContractOuterClass.TriggerSmartContract.class);
-          return triggerContract.getCallValue();
-        default:
-          return 0;
-      }
-    } catch (Exception e) {
-      return 0;
-    }
+    return TransactionCapsule.getCallValue(contract);
+  }
+
+  public static void extractTransferInfo(TransactionLogTrigger trigger,
+      Transaction.Contract contract) {
+    extractTransferInfo(trigger, contract, null);
   }
 
   /**
-   * Extract transfer information from contract.
+   * from / to / assetName / assetAmount by contract type, mirroring the live event
+   * plugin (TransactionLogTriggerCapsule) so re-exported messages match what the
+   * node pushed: besides Transfer / TransferAsset / Trigger, CreateSmartContract
+   * (owner) and the Stake 1.0 / 2.0 resource contracts (owner, receiver, amounts).
+   * Unfreeze V1 and WithdrawExpireUnfreeze amounts come from TransactionInfo.
    */
   public static void extractTransferInfo(TransactionLogTrigger trigger,
-      Transaction.Contract contract) {
+      Transaction.Contract contract, TransactionInfo transactionInfo) {
     try {
+      Any parameter = contract.getParameter();
       switch (contract.getType()) {
-        case TransferContract:
-          TransferContract transferContract =
-              contract.getParameter().unpack(TransferContract.class);
-          trigger.setFromAddress(
-              StringUtil.encode58Check(transferContract.getOwnerAddress().toByteArray()));
-          trigger.setToAddress(
-              StringUtil.encode58Check(transferContract.getToAddress().toByteArray()));
-          trigger.setAssetAmount(transferContract.getAmount());
+        case TransferContract: {
+          TransferContract c = parameter.unpack(TransferContract.class);
+          trigger.setAssetName("trx");
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
+          trigger.setToAddress(StringUtil.encode58Check(c.getToAddress().toByteArray()));
+          trigger.setAssetAmount(c.getAmount());
+          break;
+        }
+        case TransferAssetContract: {
+          AssetIssueContractOuterClass.TransferAssetContract c = parameter.unpack(
+              AssetIssueContractOuterClass.TransferAssetContract.class);
+          // asset_name holds the TRC10 token id when ALLOW_SAME_TOKEN_NAME is active
+          trigger.setAssetName(c.getAssetName().toStringUtf8());
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
+          trigger.setToAddress(StringUtil.encode58Check(c.getToAddress().toByteArray()));
+          trigger.setAssetAmount(c.getAmount());
+          break;
+        }
+        case TriggerSmartContract: {
+          SmartContractOuterClass.TriggerSmartContract c = parameter.unpack(
+              SmartContractOuterClass.TriggerSmartContract.class);
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
+          trigger.setToAddress(StringUtil.encode58Check(c.getContractAddress().toByteArray()));
+          break;
+        }
+        case CreateSmartContract: {
+          SmartContractOuterClass.CreateSmartContract c = parameter.unpack(
+              SmartContractOuterClass.CreateSmartContract.class);
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
+          break;
+        }
+        case UnfreezeBalanceContract: {
+          UnfreezeBalanceContract c = parameter.unpack(UnfreezeBalanceContract.class);
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
+          if (!ByteString.EMPTY.equals(c.getReceiverAddress())) {
+            trigger.setToAddress(StringUtil.encode58Check(c.getReceiverAddress().toByteArray()));
+          }
+          trigger.setAssetName("trx");
+          if (transactionInfo != null) {
+            trigger.setAssetAmount(transactionInfo.getUnfreezeAmount());
+          }
+          break;
+        }
+        case FreezeBalanceV2Contract: {
+          FreezeBalanceV2Contract c = parameter.unpack(FreezeBalanceV2Contract.class);
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
+          trigger.setAssetName("trx");
+          trigger.setAssetAmount(c.getFrozenBalance());
+          break;
+        }
+        case UnfreezeBalanceV2Contract: {
+          UnfreezeBalanceV2Contract c = parameter.unpack(UnfreezeBalanceV2Contract.class);
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
+          trigger.setAssetName("trx");
+          trigger.setAssetAmount(c.getUnfreezeBalance());
+          break;
+        }
+        case WithdrawExpireUnfreezeContract: {
+          WithdrawExpireUnfreezeContract c = parameter.unpack(
+              WithdrawExpireUnfreezeContract.class);
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
+          trigger.setAssetName("trx");
+          if (transactionInfo != null) {
+            trigger.setAssetAmount(transactionInfo.getWithdrawExpireAmount());
+          }
+          break;
+        }
+        case DelegateResourceContract: {
+          DelegateResourceContract c = parameter.unpack(DelegateResourceContract.class);
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
+          trigger.setToAddress(StringUtil.encode58Check(c.getReceiverAddress().toByteArray()));
+          trigger.setAssetName("trx");
+          trigger.setAssetAmount(c.getBalance());
+          break;
+        }
+        case UnDelegateResourceContract: {
+          UnDelegateResourceContract c = parameter.unpack(UnDelegateResourceContract.class);
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
+          trigger.setToAddress(StringUtil.encode58Check(c.getReceiverAddress().toByteArray()));
+          trigger.setAssetName("trx");
+          trigger.setAssetAmount(c.getBalance());
+          break;
+        }
+        case CancelAllUnfreezeV2Contract: {
+          CancelAllUnfreezeV2Contract c = parameter.unpack(CancelAllUnfreezeV2Contract.class);
+          trigger.setFromAddress(StringUtil.encode58Check(c.getOwnerAddress().toByteArray()));
           trigger.setAssetName("trx");
           break;
-        case TransferAssetContract:
-          AssetIssueContractOuterClass.TransferAssetContract transferAssetContract =
-              contract.getParameter().unpack(
-                  AssetIssueContractOuterClass.TransferAssetContract.class);
-          trigger.setFromAddress(
-              StringUtil.encode58Check(transferAssetContract.getOwnerAddress().toByteArray()));
-          trigger.setToAddress(
-              StringUtil.encode58Check(transferAssetContract.getToAddress().toByteArray()));
-          trigger.setAssetAmount(transferAssetContract.getAmount());
-
-          // Get TRC10 token ID - the asset_name field contains token ID
-          // when ALLOW_SAME_TOKEN_NAME is active
-          String tokenId = transferAssetContract.getAssetName().toStringUtf8();
-          trigger.setAssetName(tokenId);
-          break;
-        case TriggerSmartContract:
-          SmartContractOuterClass.TriggerSmartContract triggerContract =
-              contract.getParameter().unpack(
-                  SmartContractOuterClass.TriggerSmartContract.class);
-          trigger.setFromAddress(
-              StringUtil.encode58Check(triggerContract.getOwnerAddress().toByteArray()));
-          trigger.setToAddress(
-              StringUtil.encode58Check(triggerContract.getContractAddress().toByteArray()));
-          break;
+        }
         default:
-          // For other contract types, try to extract owner address if available
+          // The live plugin sets nothing else either; consumers read owner etc.
+          // from contractData.
           break;
       }
     } catch (Exception e) {
-      // Ignore extraction errors
+      logger.warn("Transaction {} - failed to extract transfer info for {}: {}",
+          trigger.getTransactionId(), contract.getType(), e.getMessage());
     }
   }
 }
